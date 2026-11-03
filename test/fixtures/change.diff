@@ -1,0 +1,25 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..c18dd8d
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++__pycache__/
+diff --git a/app/views.py b/app/views.py
+index 376a391..5a232c9 100644
+--- a/app/views.py
++++ b/app/views.py
+@@ -16,0 +17,7 @@ def orders():
++
++@app.route("/search")
++def search():
++    term = request.args.get("q", "")
++    db = sqlite3.connect("app.db")
++    rows = db.execute("SELECT id, title FROM posts WHERE title LIKE '%" + term + "%'").fetchall()
++    return {"results": rows}
+diff --git a/requirements.txt b/requirements.txt
+index 5bd19d3..dd82a28 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,0 +2 @@ flask==3.0.0
++requests==2.19.0

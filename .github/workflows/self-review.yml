@@ -1,0 +1,21 @@
+name: wolfproof review
+
+# This repository reviews its own pull requests with the workflow at the pull request's version, so
+# every change to the reviewer is tried on itself before it merges.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  wolfproof-review:
+    uses: ./.github/workflows/review.yml
+    with:
+      review-ref: ${{ github.event.pull_request.head.sha }}
+      paths-ignore: test/fixtures
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

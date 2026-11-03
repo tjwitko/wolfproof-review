@@ -1,0 +1,214 @@
+{
+  "project": "/work/haiku3",
+  "taskFile": "/opt/work/wolfproof/agent/fixtures/webhook-receiver-task.txt",
+  "baseline": null,
+  "factory": null,
+  "scannedAt": "2026-11-03T23:17:33.710Z",
+  "judgedAsOf": null,
+  "requirementsRead": {
+    "task": {
+      "sentences": 18,
+      "read": 9,
+      "covered": [],
+      "unread": [
+        {
+          "line": 1,
+          "text": "Build and deploy a webhook receiver for our payment provider's event notifications."
+        },
+        {
+          "line": 4,
+          "text": "Accept HTTP callbacks from the provider at a public endpoint."
+        },
+        {
+          "line": 5,
+          "text": "Establish that each callback genuinely came from the provider before acting on it."
+        },
+        {
+          "line": 6,
+          "text": "Keep every callback received, so that a chargeback dispute raised weeks later can be settled by what we actually received at the time."
+        },
+        {
+          "line": 8,
+          "text": "Let our support team look up past callbacks by the provider's event id."
+        },
+        {
+          "line": 9,
+          "text": "Expose a health endpoint for the load balancer."
+        },
+        {
+          "line": 14,
+          "text": "Only our support team should be able to read past callbacks."
+        },
+        {
+          "line": 14,
+          "text": "The provider is the only party that should be able to submit them."
+        },
+        {
+          "line": 27,
+          "text": "AWS, single region."
+        }
+      ]
+    },
+    "baseline": null
+  },
+  "notRead": [],
+  "coverage": null,
+  "exitCode": 1,
+  "incomplete": false,
+  "blocking": 9,
+  "controls": [
+    {
+      "name": "terraform-guard",
+      "provides": [
+        "terraform_plan"
+      ],
+      "resolvedFrom": "node_modules @tjwitko/terraform-guard-mcp",
+      "version": "1.1.2",
+      "entry": "/opt/work/wolfproof/node_modules/@tjwitko/terraform-guard-mcp/index.mjs",
+      "status": "ran",
+      "error": null
+    },
+    {
+      "name": "dep-audit",
+      "provides": [
+        "check_dependencies"
+      ],
+      "resolvedFrom": "node_modules @tjwitko/dep-audit-mcp",
+      "version": "1.0.2",
+      "entry": "/opt/work/wolfproof/node_modules/@tjwitko/dep-audit-mcp/index.mjs",
+      "status": "ran",
+      "error": null
+    },
+    {
+      "name": "secret-guard",
+      "provides": [
+        "scan_path"
+      ],
+      "resolvedFrom": "node_modules @tjwitko/secret-guard-mcp",
+      "version": "1.0.2",
+      "entry": "/opt/work/wolfproof/node_modules/@tjwitko/secret-guard-mcp/index.mjs",
+      "status": "ran",
+      "error": null
+    },
+    {
+      "name": "identity-guard",
+      "provides": [
+        "check_auth_posture"
+      ],
+      "resolvedFrom": "node_modules @tjwitko/identity-guard-mcp",
+      "version": "1.0.3",
+      "entry": "/opt/work/wolfproof/node_modules/@tjwitko/identity-guard-mcp/index.mjs",
+      "status": "ran",
+      "error": null
+    }
+  ],
+  "toolchain": {
+    "node": "26.5.1",
+    "go": "1.27.1",
+    "terraform": "1.15.8",
+    "gitleaks": "8.30.1",
+    "osv-scanner": "2.4.0",
+    "checkov": "3.3.10",
+    "python3": "3.14.8",
+    "ruff": "0.16.2",
+    "semgrep": "1.180.0",
+    "pytest": "9.1.1",
+    "docker": "29.6.2"
+  },
+  "validatorsRun": [
+    "build_check",
+    "terraform_plan(terraform)",
+    "check_dependencies",
+    "immutability",
+    "authentication",
+    "manifest_contract",
+    "k8s_manifest",
+    "secret_rotation",
+    "retention",
+    "tests",
+    "iam_contract",
+    "artifact_presence",
+    "code_quality",
+    "dockerfile",
+    "sast",
+    "iac_templates",
+    "artifact_census",
+    "checkov(terraform)",
+    "resource_census(terraform)",
+    "check_auth_posture",
+    "scan_path"
+  ],
+  "couldNotRun": [],
+  "notApplicable": [],
+  "exempt": [],
+  "reviewed": [],
+  "reviewable": [],
+  "findings": [
+    {
+      "severity": "blocking",
+      "message": "check_dependencies: 2 finding(s) at or above high severity:\n{\n  \"directory\": \"/work/haiku3\",\n  \"scanned\": true,\n  \"packagesWithFindings\": 3,\n  \"counts\": {\n    \"low\": 0,\n    \"moderate\": 3,\n    \"high\": 1,\n    \"critical\": 1,\n    \"unknown\": 0\n  },\n  \"worstSeverityFound\": \"critical\",\n  \"directFindings\": 0,\n  \"directPackages\": [],\n  \"unclassifiedFindings\": 0,\n  \"guidance\": \"None of these are in packages this project declares itself — every finding arrived through something else. That is not the same as being unreachable: a transitive package still runs in your process. Check whether your code path reaches the vulnerable function before deciding it does not apply.\",\n  \"findings\": [\n    {\n      \"package\": \"body-parser\",\n      \"version\": \"1.20.6\",\n      \"ecosystem\": \"npm\",\n      \"id\": \"GHSA-27r3-jxmh-p828\",\n      \"summary\": \"body-parser vulnerable to Denial of Service via trailing bytes after a compressed request body\",\n      \"cvssScore\": \"7.5\",\n      \"fixedVersion\": \"2.4.0\",\n      \"direct\": false\n    },\n    {\n      \"package\": \"proxy-addr\",\n      \"version\": \"2.0.7\",\n      \"ecosystem\": \"npm\",\n      \"id\": \"GHSA-jqcg-44mw-7w3h\",\n      \"summary\": \"pr"
+    },
+    {
+      "severity": "blocking",
+      "message": "retention: RDS store \"webhook\" holds the records and can be destroyed — no deletion_protection = true, or lifecycle { prevent_destroy = true }. Nothing here expires these records, but one `terraform destroy`, or one resource replacement, ends the 7 year(s) the task requires. Declaring protection on some other resource does not count: a deliverable set enable_deletion_protection on its load balancer while the database holding the callbacks had none."
+    },
+    {
+      "severity": "blocking",
+      "message": "code quality: none of the 3 test file(s) import anything from this project — tests/duplicate-handling.test.js, tests/runner.js, tests/signature-verification.test.js. A test that never reaches the code under test cannot be evidence about it, however many assertions it contains and whether or not it passes: asserting that two identical HMAC calls agree tests the crypto library, and asserting that a string copied from a source file contains a substring tests the copy. Import the modules being tested and exercise them."
+    },
+    {
+      "severity": "blocking",
+      "message": "dockerfile: Dockerfile builds on a base image past end of life (endoflife.date, as of 2026-11-03) — line 1 FROM node:20-alpine: Node.js 20 reached end of life on 2026-04-30. A release past end of life gets no security fixes, so neither does whatever runs on it. Supported: Node.js 26 or 24."
+    },
+    {
+      "severity": "blocking",
+      "message": "workload identity: k8s/deployment.yaml: container \"webhook-receiver\" takes DATABASE_URL from Secret key \"database-url\" — this is a shared credential handed to the workload. Replace it with an identity the workload proves — IAM database auth, or mTLS with an SVID."
+    },
+    {
+      "severity": "blocking",
+      "message": "workload identity: k8s/deployment.yaml: container \"webhook-receiver\" takes PROVIDER_SECRET from Secret key \"provider-secret\" — this is a shared credential handed to the workload. Replace it with an identity the workload proves — IAM database auth, or mTLS with an SVID."
+    },
+    {
+      "severity": "blocking",
+      "message": "workload identity: k8s/deployment.yaml: container \"webhook-receiver\" takes ADMIN_TOKEN from Secret key \"admin-token\" — this is a shared credential handed to the workload. Replace it with an identity the workload proves — IAM database auth, or mTLS with an SVID."
+    },
+    {
+      "severity": "blocking",
+      "message": "workload identity: src/database.js: a connection string authenticates with a password — build the connection from an identity instead: an IAM auth token (RDS IAM, Cloud SQL IAM, Azure AD) fetched at connect time, or mTLS with an SVID. A DSN with a password in it is password authentication whether the value is real, interpolated or a placeholder."
+    },
+    {
+      "severity": "blocking",
+      "message": "workload identity: tests/runner.js: a connection string authenticates with a password — build the connection from an identity instead: an IAM auth token (RDS IAM, Cloud SQL IAM, Azure AD) fetched at connect time, or mTLS with an SVID. A DSN with a password in it is password authentication whether the value is real, interpolated or a placeholder."
+    }
+  ],
+  "advisories": [
+    {
+      "severity": "advisory",
+      "message": "authentication: 1 route(s) exempt by name, not checked — GET /health (src/index.js:26, probe). Probe paths (/health, /ping, /metrics and the like) are expected to be open, and an endpoint that issues a credential cannot require it first. The exemption is by path alone: a route with one of these names that reads request input or changes state needs authentication like any other."
+    },
+    {
+      "severity": "advisory",
+      "message": "secret rotation: the task says a secret rotates, but nothing here reads a secret from a managed store — a secret delivered another way cannot pick up a rotation without a restart"
+    },
+    {
+      "severity": "advisory",
+      "message": "retention: backup_retention_period is set, and it is not record retention. A backup window is how far back the store can be restored — at most 35 days on RDS and DynamoDB — not how long a record survives inside it. The task asks for 7 year(s). Nothing here deletes the records, so the requirement is not violated, but nothing here establishes it either."
+    },
+    {
+      "severity": "advisory",
+      "message": "tests: ran under node --test — 2 of 2 passed."
+    },
+    {
+      "severity": "advisory",
+      "message": "code quality: 3 test file(s) found and read — tests/duplicate-handling.test.js, tests/runner.js, tests/signature-verification.test.js. This is what is in the files, not what happens when they run; the tests check reports that separately, and its verdict is the one that counts. A test that imports a module before setting the environment that module reads, or patches an attribute it does not have, looks entirely reasonable in the file and fails the moment it runs."
+    },
+    {
+      "severity": "advisory",
+      "message": "checkov (terraform): 23 finding(s) in your own configuration — advisory, not blocking. 74 check(s) ran against 33 resource(s), covering 1 of 2 .tf file(s) here; a file declaring no resources checkov has a policy for is not a gap. No files failed to parse.\n    CKV_AWS_130 aws_subnet.public[0] — Ensure VPC subnets do not assign public IP by default\n    CKV_AWS_260 aws_security_group.alb — Ensure no security groups allow ingress from 0.0.0.0:0 to port 80\n    CKV_AWS_23 aws_security_group.alb — Ensure every security group and rule has a description\n    CKV_AWS_382 aws_security_group.alb — Ensure no security groups allow egress from 0.0.0.0:0 to port -1\n    CKV_AWS_23 aws_security_group.ecs_tasks — Ensure every security group and rule has a description\n    CKV_AWS_382 aws_security_group.ecs_tasks — Ensure no security groups allow egress from 0.0.0.0:0 to port -1\n    CKV_AWS_23 aws_security_group.rds — Ensure every security group and rule has a description\n    CKV_AWS_382 aws_security_group.rds — Ensure no security groups allow egress from 0.0.0.0:0 to port -1\n    CKV_AWS_161 aws_db_instance.webhook — Ensure RDS database has IAM authentication enabled\n    CKV_AWS_293 aws_db_instance.webhook — Ensure that AWS database instances have deletion protection enabled\n    CKV_AWS_353 aws_db_instance.webhook — Ensure that RDS instances have performance insights enabled\n    CKV_AWS_129 aws_db_instance.webhook — Ensure that respective logs of Amazon Relational Database Service (Amazon RDS) are enabled\n    (+11 more)"
+    },
+    {
+      "severity": "advisory",
+      "message": "workload identity: 1 heuristic finding(s) — k8s/deployment.yaml: Deployment/webhook-receiver uses ServiceAccount \"webhook-receiver\", but nothing in these manifests binds it to an identity (no IRSA/GKE/Azure annotation, no SPIFFE volume)"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "wolfproof-review",
+  "owner": { "name": "Tom Witkowski" },
+  "plugins": [
+    {
+      "name": "wolfproof-review",
+      "source": "./plugins/wolfproof-review",
+      "description": "Reviews a change against wolfproof's rules, commenting only on the lines it changed.",
+      "category": "security"
+    }
+  ]
+}
