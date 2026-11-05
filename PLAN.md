@@ -181,7 +181,7 @@ Each case runs three times. Results vary between runs of the same model, so one 
 3. **Default model: Sonnet 5.5,** for cost per pull request, until phase 2's measurements say otherwise.
 4. **Built here,** separately from wolfproof, which stays with the session that maintains it.
 
-## Phase 1 as built (v0.1.0)
+## Phase 1 as built
 
 - No `fail-on` input yet (phase 3). Inputs: `model`, `max-comments`, `paths-ignore`, and `review-ref`
   for this repository's own self-review.
@@ -190,3 +190,6 @@ Each case runs three times. Results vary between runs of the same model, so one 
 - Summary-only mode when there is no key, or the pull request comes from a fork.
 - After Claude, a script lists the comments it posted and flags any on an unchanged line, in the
   summary and as a workflow warning.
+- The plugin has a `PreToolUse` hook: `gh pr create` (or `gh pr new`) is denied until
+  `/wolfproof-review` has prepared a review of HEAD against the pull request's base. It is a nudge
+  for Claude, off with `WOLFPROOF_REVIEW_HOOK=off`; the workflow stays the review every PR gets.

@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.1.0
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.2
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -72,12 +72,51 @@ Then, on a branch:
 /wolfproof-review main
 ```
 
+To update to a newer release, refresh the marketplace, then update the plugin, and restart Claude
+Code or run `/reload-plugins`:
+
+```bash
+claude plugin marketplace update wolfproof-review
+claude plugin update wolfproof-review@wolfproof-review
+```
+
 It reviews your branch against `main`, uncommitted changes to tracked files included, and prints the
 comments in the chat instead of posting them.
-- **With wolfproof installed** in the project (`npm install --save-dev github:tjwitko/wolfproof#v1.15.0`),
-  it runs wolfproof first. wolfproof runs your tests and builds, so this can take a few minutes.
+- **With wolfproof,** it runs wolfproof first. wolfproof runs your tests and builds, so this can take
+  a few minutes. It looks in two places:
+  - **the project's own install,** `node_modules/wolfproof`
+    (`npm install --save-dev github:tjwitko/wolfproof#v1.15.1`), which wins when it is there, since it
+    is the version the project chose;
+  - **`WOLFPROOF_BIN`,** for a repository that does not install it, such as one that is not a Node
+    project. Set it to wolfproof's directory, to its `bin/validate.mjs`, or to a command on your
+    `PATH` such as `wolfproof`. Set it where Claude Code's commands see it, for example under `env` in
+    `~/.claude/settings.json`:
+
+    ```json
+    { "env": { "WOLFPROOF_BIN": "~/tools/wolfproof" } }
+    ```
+
+    One way to get a copy: `git clone --branch v1.15.1 https://github.com/tjwitko/wolfproof ~/tools/wolfproof`,
+    then `npm ci` inside it.
 - **Without wolfproof,** it reviews against the rulebook alone and says so. Add `--no-scan` to skip the
   scan deliberately.
+
+### Before Claude opens a pull request
+
+The plugin adds a hook. When Claude runs `gh pr create` (or `gh pr new`), the hook checks whether
+`/wolfproof-review` has reviewed the commit being proposed, against the pull request's base. If it
+has not, the command is stopped and Claude is told to run the review first. Claude then reviews,
+fixes or reports what it finds, and opens the pull request.
+
+- **A new commit needs a new review.** With wolfproof installed, each review runs your tests and
+  build, so expect a few minutes before each pull request Claude opens.
+- **Turn it off** by setting `WOLFPROOF_REVIEW_HOOK=off` in Claude Code's environment, for example
+  under `env` in `.claude/settings.json`, or by disabling the plugin.
+- **It is a nudge for Claude, not a control.** It lets the command through whenever it cannot tell,
+  for example outside a git repository, and it does not check that Claude acted on the review. The
+  GitHub workflow is what reviews every pull request, whoever opens it.
+- The record of the last review is `wolfproof-review.json` in the repository's git directory, which
+  git does not track.
 
 ## How it works, and why it is safe to run
 
