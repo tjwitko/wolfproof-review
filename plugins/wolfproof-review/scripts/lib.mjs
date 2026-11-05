@@ -362,3 +362,40 @@ export function sameBase(reviewed, requested) {
   const short = (b) => String(b || "").replace(/^(?:refs\/remotes\/|refs\/heads\/)?(?:origin\/)?/, "");
   return short(reviewed) === short(requested);
 }
+
+// ---- Finding wolfproof for a local review (review.mjs local) ----------------------------------
+
+/**
+ * How a local review runs wolfproof: the project's own install first, the version the project chose,
+ * then WOLFPROOF_BIN. WOLFPROOF_BIN names wolfproof's bin/validate.mjs, its package directory, or a
+ * command on PATH such as `wolfproof`. `fs` is { exists(p), isDir(p) }, passed in for the tests.
+ * @returns {{file: string, args: string[], via: string} | {note: string}}
+ *   `file` and `args` for spawnSync, with "." and "--json" still to add; or why it does not run.
+ */
+export function wolfproofCommand(root, env, fs, node = process.execPath) {
+  const sep = /[\\/]/;
+  const own = `${root}/node_modules/wolfproof/bin/validate.mjs`;
+  if (fs.exists(own)) return { file: node, args: [own], via: "this project's node_modules/wolfproof" };
+  const bin = String(env.WOLFPROOF_BIN || "").trim();
+  if (!bin) {
+    return {
+      note:
+        "wolfproof is not installed in this project (node_modules/wolfproof) and WOLFPROOF_BIN is not set, so there are no " +
+        "scanner findings; the review uses the rulebook alone.",
+    };
+  }
+  if (!sep.test(bin)) return { file: bin, args: [], via: `WOLFPROOF_BIN (${bin} on PATH)` };
+  const abs = (bin.startsWith("~/") && env.HOME ? `${env.HOME}${bin.slice(1)}` : bin).replace(/(?<=.)[\\/]+$/, "");
+  if (!fs.exists(abs)) {
+    return { note: `WOLFPROOF_BIN is set to ${bin}, which does not exist, so there are no scanner findings; the review uses the rulebook alone.` };
+  }
+  if (fs.isDir(abs)) {
+    const inside = `${abs}/bin/validate.mjs`;
+    if (!fs.exists(inside)) {
+      return { note: `WOLFPROOF_BIN is set to the directory ${bin}, which has no bin/validate.mjs, so there are no scanner findings; the review uses the rulebook alone.` };
+    }
+    return { file: node, args: [inside], via: `WOLFPROOF_BIN (${bin})` };
+  }
+  if (/\.(?:mjs|cjs|js)$/.test(abs)) return { file: node, args: [abs], via: `WOLFPROOF_BIN (${bin})` };
+  return { file: abs, args: [], via: `WOLFPROOF_BIN (${bin})` };
+}

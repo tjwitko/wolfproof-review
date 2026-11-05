@@ -181,7 +181,7 @@ Each case runs three times. Results vary between runs of the same model, so one 
 3. **Default model: Sonnet 5.5,** for cost per pull request, until phase 2's measurements say otherwise.
 4. **Built here,** separately from wolfproof, which stays with the session that maintains it.
 
-## Phase 1 as built (v0.2.0)
+## Phase 1 as built (v0.2.1)
 
 - No `fail-on` input yet (phase 3). Inputs: `model`, `max-comments`, `paths-ignore`, and `review-ref`
   for this repository's own self-review.

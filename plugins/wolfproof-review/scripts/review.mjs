@@ -7,19 +7,19 @@
 //   review.mjs existing --out F                          (GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER)
 //   review.mjs check    --diff F --since ISO --out F     (the same variables)
 //   review.mjs summary  --sorted F [--claude STATUS] [--check F] [--note TEXT] [--post]
-//   review.mjs local    [base] [--no-scan]
+//   review.mjs local    [base] [--no-scan]           (wolfproof: node_modules/wolfproof, else WOLFPROOF_BIN)
 //
 // Exit 0, or 2 on a usage error. A GitHub call that fails is reported and, for `summary --post`,
 // does not fail the step: the job summary still carries the text.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, localDirName, STAMP } from "./lib.mjs";
+import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, localDirName, STAMP, wolfproofCommand } from "./lib.mjs";
 import { botReviewComments, upsertSummary } from "./github.mjs";
 
 const PLUGIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -178,16 +178,21 @@ function local(o) {
 
   let resultFile = null;
   let scanNote = "";
-  const gate = path.join(cwd, "node_modules", "wolfproof", "bin", "validate.mjs");
-  if (o["no-scan"]) scanNote = "Scan skipped (--no-scan).";
-  else if (!existsSync(gate)) scanNote = "wolfproof is not installed in this project (node_modules/wolfproof), so there are no scanner findings; the review uses the rulebook alone.";
+  let scannedWith = "";
+  const gate = o["no-scan"] ? null : wolfproofCommand(cwd, process.env, { exists: existsSync, isDir: (p) => statSync(p).isDirectory() });
+  if (!gate) scanNote = "Scan skipped (--no-scan).";
+  else if (gate.note) scanNote = gate.note;
   else {
     // The gate runs the project's tests and builds, as it always does.
-    const r = spawnSync(process.execPath, [gate, ".", "--json"], { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: 15 * 60 * 1000 });
+    scannedWith = gate.via;
+    const r = spawnSync(gate.file, [...gate.args, ".", "--json"], { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: 15 * 60 * 1000 });
     if (r.stdout && r.stdout.trim().startsWith("{")) {
       writeFileSync(f("result.json"), r.stdout);
       resultFile = f("result.json");
-    } else scanNote = `wolfproof did not produce a result (exit ${r.status}${r.error ? `, ${r.error.code}` : ""}).`;
+    } else {
+      const why = r.error?.code === "ENOENT" ? "it was not found" : `exit ${r.status}${r.error ? `, ${r.error.code}` : ""}`;
+      scanNote = `wolfproof, from ${gate.via}, did not produce a result (${why}), so there are no scanner findings; the review uses the rulebook alone.`;
+    }
   }
   const head = git(["rev-parse", "HEAD"], cwd).trim();
   writeFileSync(f("meta.json"), JSON.stringify({ head, base, mergeBase, scanNote, mode: "local" }));
@@ -209,6 +214,7 @@ function local(o) {
     mode: "local",
     out: f("prompt.md"),
   });
+  if (scannedWith) console.log(`wolfproof: ${scannedWith}`);
   if (scanNote) console.log(scanNote);
   console.log(`base: ${base} (merge base ${mergeBase.slice(0, 7)})`);
   console.log(`instructions: ${f("prompt.md")}`);

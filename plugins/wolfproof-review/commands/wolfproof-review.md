@@ -5,8 +5,8 @@ allowed-tools: ["Bash(node \"${CLAUDE_PLUGIN_ROOT}/scripts/review.mjs\" local:*)
 ---
 
 Prepare the review inputs by running this command, with a Bash timeout of 900000 ms. When wolfproof
-is installed in this project, the command runs it, and wolfproof runs the project's tests and builds,
-which can take several minutes:
+is installed in this project, or WOLFPROOF_BIN names a copy, the command runs it, and wolfproof runs
+the project's tests and builds, which can take several minutes:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/review.mjs" local $ARGUMENTS
