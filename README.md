@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.1
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.2
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -85,7 +85,7 @@ comments in the chat instead of posting them.
 - **With wolfproof,** it runs wolfproof first. wolfproof runs your tests and builds, so this can take
   a few minutes. It looks in two places:
   - **the project's own install,** `node_modules/wolfproof`
-    (`npm install --save-dev github:tjwitko/wolfproof#v1.15.0`), which wins when it is there, since it
+    (`npm install --save-dev github:tjwitko/wolfproof#v1.15.1`), which wins when it is there, since it
     is the version the project chose;
   - **`WOLFPROOF_BIN`,** for a repository that does not install it, such as one that is not a Node
     project. Set it to wolfproof's directory, to its `bin/validate.mjs`, or to a command on your
@@ -96,7 +96,7 @@ comments in the chat instead of posting them.
     { "env": { "WOLFPROOF_BIN": "~/tools/wolfproof" } }
     ```
 
-    One way to get a copy: `git clone --branch v1.15.0 https://github.com/tjwitko/wolfproof ~/tools/wolfproof`,
+    One way to get a copy: `git clone --branch v1.15.1 https://github.com/tjwitko/wolfproof ~/tools/wolfproof`,
     then `npm ci` inside it.
 - **Without wolfproof,** it reviews against the rulebook alone and says so. Add `--no-scan` to skip the
   scan deliberately.

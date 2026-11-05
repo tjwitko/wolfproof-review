@@ -1,6 +1,6 @@
 {
   "repository": "tjwitko/wolfproof",
-  "tag": "v1.15.0",
+  "tag": "v1.15.1",
   "path": "docs/checks.md",
   "note": "A copy of wolfproof's rulebook at the tag the review workflow pins. CI fails if it differs from the file at that tag."
 }
