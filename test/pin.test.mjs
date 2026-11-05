@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { FILES, actionOutputs, pinEdits } from "../scripts/pin-wolfproof.mjs";
+import { FILES, actionOutputs, changedPaths, pinEdits } from "../scripts/pin-wolfproof.mjs";
 
 const read = (k) => readFileSync(new URL(`../${FILES[k]}`, import.meta.url), "utf8");
 const files = () => ({ workflow: read("workflow"), readme: read("readme"), plugin: read("plugin") });
@@ -47,4 +47,10 @@ test("actionOutputs reads an Action's declared outputs", () => {
   const yml = "name: x\ninputs:\n  project:\n    default: .\noutputs:\n  outcome:\n    description: a\n    value: b\n\n  result:\n    value: c\nruns:\n  using: composite\n";
   assert.deepEqual(actionOutputs(yml), ["outcome", "result"]);
   assert.deepEqual(actionOutputs("name: x\nruns:\n  using: node20\n"), []);
+});
+
+test("changedPaths keeps every character of every path, the first included", () => {
+  assert.deepEqual(changedPaths(" M .github/workflows/review.yml\0 M README.md\0?? new file.txt\0"), [".github/workflows/review.yml", "README.md", "new file.txt"]);
+  assert.deepEqual(changedPaths("R  b.md\0a.md\0 M c.md\0"), ["b.md", "c.md"]);
+  assert.deepEqual(changedPaths(""), []);
 });

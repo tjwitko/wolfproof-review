@@ -44,6 +44,18 @@ const newer = (a, b) => {
   return false;
 };
 
+/** The paths `git status --porcelain -z` lists, renames by their new path. */
+export function changedPaths(z) {
+  const out = [];
+  const parts = String(z).split("\0");
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i]) continue;
+    out.push(parts[i].slice(3));
+    if (/^[RC]/.test(parts[i])) i++; // the original path follows a rename or copy
+  }
+  return out;
+}
+
 /** The outputs an Action declares, from its action.yml text. */
 export function actionOutputs(yml) {
   const block = /^outputs:\n((?:[ \t].*\n|\n)*)/m.exec(String(yml).replace(/\r\n/g, "\n") + "\n");
@@ -140,7 +152,7 @@ async function main(argv) {
 
   const t = spawnSync(process.execPath, ["--test", "test/*.test.mjs"], { cwd: ROOT, encoding: "utf8" });
   if (t.status !== 0) return stop(`the tests fail after the edit; left uncommitted:\n${(t.stdout + t.stderr).split("\n").filter((l) => /^not ok|✖|Error/.test(l)).slice(0, 10).join("\n")}`);
-  const changed = git("status", "--porcelain").split("\n").map((l) => l.slice(3));
+  const changed = changedPaths(execFileSync("git", ["status", "--porcelain", "-z"], { cwd: ROOT, encoding: "utf8" }));
   const extra = changed.filter((f) => !Object.values(FILES).includes(f));
   if (extra.length) return stop(`files outside the pin changed: ${extra.join(", ")}`);
 
