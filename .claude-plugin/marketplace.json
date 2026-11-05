@@ -1,6 +1,11 @@
 {
   "name": "wolfproof-review",
-  "owner": { "name": "Tom Witkowski" },
+  "owner": {
+    "name": "Tom Witkowski"
+  },
+  "metadata": {
+    "description": "wolfproof-review: a pull-request reviewer for legacy code, built on wolfproof's rules and scanners."
+  },
   "plugins": [
     {
       "name": "wolfproof-review",

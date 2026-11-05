@@ -190,3 +190,6 @@ Each case runs three times. Results vary between runs of the same model, so one 
 - Summary-only mode when there is no key, or the pull request comes from a fork.
 - After Claude, a script lists the comments it posted and flags any on an unchanged line, in the
   summary and as a workflow warning.
+- The plugin has a `PreToolUse` hook: `gh pr create` (or `gh pr new`) is denied until
+  `/wolfproof-review` has prepared a review of HEAD against the pull request's base. It is a nudge
+  for Claude, off with `WOLFPROOF_REVIEW_HOOK=off`; the workflow stays the review every PR gets.

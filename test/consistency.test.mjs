@@ -42,6 +42,21 @@ test("the marketplace lists the plugin at its folder", () => {
   assert.deepEqual(market.plugins.map((p) => [p.name, p.source]), [[plugin.name, "./plugins/wolfproof-review"]]);
 });
 
+test("the plugin's hooks run scripts that exist, on the commands that open a pull request", () => {
+  const hooks = JSON.parse(read("plugins/wolfproof-review/hooks/hooks.json")).hooks;
+  assert.deepEqual(Object.keys(hooks), ["PreToolUse"]);
+  const handlers = hooks.PreToolUse.flatMap((m) => {
+    assert.equal(m.matcher, "Bash");
+    return m.hooks;
+  });
+  assert.deepEqual(handlers.map((h) => h.if), ["Bash(gh pr create*)", "Bash(gh pr new*)"]);
+  for (const h of handlers) {
+    const [, script] = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+)"$/.exec(h.command) || [];
+    assert.ok(script, h.command);
+    read(`plugins/wolfproof-review/${script}`);
+  }
+});
+
 test("the agent's tools are read-only", () => {
   const agent = read("plugins/wolfproof-review/agents/wolfproof-reviewer.md");
   assert.match(agent, /^tools: Read, Grep, Glob$/m);

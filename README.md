@@ -79,6 +79,23 @@ comments in the chat instead of posting them.
 - **Without wolfproof,** it reviews against the rulebook alone and says so. Add `--no-scan` to skip the
   scan deliberately.
 
+### Before Claude opens a pull request
+
+The plugin adds a hook. When Claude runs `gh pr create` (or `gh pr new`), the hook checks whether
+`/wolfproof-review` has reviewed the commit being proposed, against the pull request's base. If it
+has not, the command is stopped and Claude is told to run the review first. Claude then reviews,
+fixes or reports what it finds, and opens the pull request.
+
+- **A new commit needs a new review.** With wolfproof installed, each review runs your tests and
+  build, so expect a few minutes before each pull request Claude opens.
+- **Turn it off** by setting `WOLFPROOF_REVIEW_HOOK=off` in Claude Code's environment, for example
+  under `env` in `.claude/settings.json`, or by disabling the plugin.
+- **It is a nudge for Claude, not a control.** It lets the command through whenever it cannot tell,
+  for example outside a git repository, and it does not check that Claude acted on the review. The
+  GitHub workflow is what reviews every pull request, whoever opens it.
+- The record of the last review is `wolfproof-review.json` in the repository's git directory, which
+  git does not track.
+
 ## How it works, and why it is safe to run
 
 The workflow has two jobs.

@@ -13,13 +13,13 @@
 // does not fail the step: the job summary still carries the text.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff } from "./lib.mjs";
+import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, localDirName, STAMP } from "./lib.mjs";
 import { botReviewComments, upsertSummary } from "./github.mjs";
 
 const PLUGIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,7 +167,8 @@ function local(o) {
     process.exit(2);
   }
   const mergeBase = git(["merge-base", base, "HEAD"], cwd).trim();
-  const dir = path.join(os.tmpdir(), `wolfproof-review-${createHash("sha256").update(cwd).digest("hex").slice(0, 12)}`);
+  // The pull-request hook (pr-hook.mjs) reads meta.json here to tell whether HEAD has been reviewed.
+  const dir = path.join(os.tmpdir(), localDirName(cwd));
   mkdirSync(dir, { recursive: true });
   const f = (n) => path.join(dir, n);
 
@@ -190,6 +191,13 @@ function local(o) {
   }
   const head = git(["rev-parse", "HEAD"], cwd).trim();
   writeFileSync(f("meta.json"), JSON.stringify({ head, base, mergeBase, scanNote, mode: "local" }));
+  // What the pull-request hook (pr-hook.mjs) checks: which commit was reviewed, against which base.
+  // In the repository's own git directory, which the hook finds whatever temporary directory it sees.
+  try {
+    writeFileSync(path.join(git(["rev-parse", "--absolute-git-dir"], cwd).trim(), STAMP), JSON.stringify({ head, base }) + "\n");
+  } catch (err) {
+    console.log(`note: could not record this review for the pull-request hook (${err.code || err.message}).`);
+  }
   sort({ result: resultFile, diff: f("diff.patch"), files: f("files.txt"), root: cwd, out: f("sorted.json"), meta: f("meta.json") });
   prompt({
     agent: path.join(PLUGIN, "agents", "wolfproof-reviewer.md"),

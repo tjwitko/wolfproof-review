@@ -1,6 +1,8 @@
 // The deterministic half of wolfproof-review: which of wolfproof's findings sit on lines a change
 // touched, the summary comment, and the prompt. No network and no AI here, so all of it is tested.
 
+import { createHash } from "node:crypto";
+
 export const MARKER = "<!-- wolfproof-review:summary -->";
 export const GROUPS = ["changed-line", "changed-file", "elsewhere"];
 const SUMMARY_LIMIT = 60000; // GitHub rejects a comment body over 65,536 characters.
@@ -326,4 +328,37 @@ export function buildPrompt(agentMd, ctx) {
     lines.push(`- This change is large (${ctx.changedLines} changed lines). Start with the files that have findings, then the files that handle requests, credentials, queries, commands or file paths.`);
   }
   return lines.join("\n") + "\n";
+}
+
+// ---- The pull-request hook (scripts/pr-hook.mjs) ----------------------------------------------
+
+/** The file in a repository's git directory that records the last local review: { head, base }. */
+export const STAMP = "wolfproof-review.json";
+
+/** The directory, under the system's temporary directory, where a local review of this repository
+ * keeps its inputs. One per repository, named by a hash of its root. */
+export function localDirName(repoRoot) {
+  return `wolfproof-review-${createHash("sha256").update(repoRoot).digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * Whether a shell command opens a pull request with `gh pr create` (or its alias `gh pr new`), and the
+ * base it names with --base or -B. null when it does not open one.
+ * @returns {{base: string|null}|null}
+ */
+export function prCreate(command) {
+  const m = /(?:^|[\s;&|(`])gh\s+pr\s+(?:create|new)(?=\s|$|[;&|)`])/.exec(String(command));
+  if (!m) return null;
+  // Only this command's own arguments: up to the next command on the line.
+  const rest = command.slice(m.index + m[0].length).split(/&&|\|\||[;\n|]/)[0];
+  const b = /(?:^|\s)(?:--base|-B)(?:=|\s+)("[^"]*"|'[^']*'|[^\s"']+)/.exec(rest);
+  return { base: b ? b[1].replace(/^["']|["']$/g, "") : null };
+}
+
+/** Whether a review against `reviewed` covers a pull request into `requested`. A pull request that
+ * names no base goes to the default branch, which is what a review with no base uses too. */
+export function sameBase(reviewed, requested) {
+  if (!requested) return true;
+  const short = (b) => String(b || "").replace(/^(?:refs\/remotes\/|refs\/heads\/)?(?:origin\/)?/, "");
+  return short(reviewed) === short(requested);
 }
