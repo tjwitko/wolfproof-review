@@ -100,8 +100,9 @@ export function pinEdits(files, next) {
     const left = text.split("\n").filter((l) => new RegExp(`(tjwitko/wolfproof|wolfproof-review|VERSION).*${P}(?![0-9])|${R}(?![0-9])`).test(l));
     for (const l of left) problems.push(`${name} still names an old version: ${l.trim()}`);
   }
-  plugin.version = reviewNext.slice(1);
-  return { prev, next, reviewPrev, reviewNext, out: { workflow, readme, plugin: `${JSON.stringify(plugin, null, 2)}\n` }, problems };
+  // The version string alone, so the file keeps its layout.
+  const pluginOut = files.plugin.replace(/("version"\s*:\s*")[^"]*(")/, `$1${reviewNext.slice(1)}$2`);
+  return { prev, next, reviewPrev, reviewNext, out: { workflow, readme, plugin: pluginOut }, problems };
 }
 
 async function get(url) {
@@ -146,9 +147,7 @@ async function main(argv) {
   write("readme", plan.out.readme);
   write("plugin", plan.out.plugin);
   write("rulebook", checks);
-  const source = JSON.parse(read("source"));
-  source.tag = plan.next;
-  write("source", `${JSON.stringify(source, null, 2)}\n`);
+  write("source", read("source").replace(/("tag"\s*:\s*")[^"]*(")/, `$1${plan.next}$2`));
 
   const t = spawnSync(process.execPath, ["--test", "test/*.test.mjs"], { cwd: ROOT, encoding: "utf8" });
   if (t.status !== 0) return stop(`the tests fail after the edit; left uncommitted:\n${(t.stdout + t.stderr).split("\n").filter((l) => /^not ok|✖|Error/.test(l)).slice(0, 10).join("\n")}`);

@@ -31,6 +31,7 @@ test("a pin moves every wolfproof reference and the reviewer's own version one p
   const shape = (t) => t.replace(/v?\d+\.\d+\.\d+/g, "V");
   assert.equal(shape(workflow), shape(f.workflow));
   assert.equal(shape(readme), shape(f.readme));
+  assert.equal(shape(plugin), shape(f.plugin));
 });
 
 test("a pin stops when the files are not in the shape it expects", () => {
