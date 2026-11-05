@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.1.0
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.0
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -70,6 +70,14 @@ Then, on a branch:
 
 ```text
 /wolfproof-review main
+```
+
+To update to a newer release, refresh the marketplace, then update the plugin, and restart Claude
+Code or run `/reload-plugins`:
+
+```bash
+claude plugin marketplace update wolfproof-review
+claude plugin update wolfproof-review@wolfproof-review
 ```
 
 It reviews your branch against `main`, uncommitted changes to tracked files included, and prints the
