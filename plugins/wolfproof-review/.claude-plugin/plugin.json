@@ -1,10 +1,10 @@
 {
   "name": "wolfproof-review",
   "description": "Reviews a change against wolfproof's rules, commenting only on the lines it changed. Built for legacy code, where existing findings would otherwise drown the review.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "author": { "name": "Tom Witkowski" },
   "homepage": "https://github.com/tjwitko/wolfproof-review",
   "repository": "https://github.com/tjwitko/wolfproof-review",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "keywords": ["code-review", "security", "wolfproof", "legacy"]
 }

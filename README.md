@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.3
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.4
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -164,4 +164,6 @@ node --test 'test/*.test.mjs'
 
 ## Licence
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+[GNU Affero General Public License v3.0](LICENSE) © 2026 Tom Witkowski, for everything after v0.2.3. Releases up to and
+including v0.2.3 remain under Apache-2.0. `plugins/wolfproof-review/rulebook/checks.md` is a copy of
+`docs/checks.md` from [wolfproof](https://github.com/tjwitko/wolfproof), under the same licence.
