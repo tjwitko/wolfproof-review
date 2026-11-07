@@ -1,7 +1,7 @@
 {
   "name": "wolfproof-review",
   "description": "Reviews a change against wolfproof's rules, commenting only on the lines it changed. Built for legacy code, where existing findings would otherwise drown the review.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "author": { "name": "Tom Witkowski" },
   "homepage": "https://github.com/tjwitko/wolfproof-review",
   "repository": "https://github.com/tjwitko/wolfproof-review",
