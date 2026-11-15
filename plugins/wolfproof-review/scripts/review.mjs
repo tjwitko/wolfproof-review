@@ -179,7 +179,9 @@ function local(o) {
   let resultFile = null;
   let scanNote = "";
   let scannedWith = "";
-  const gate = o["no-scan"] ? null : wolfproofCommand(cwd, process.env, { exists: existsSync, isDir: (p) => statSync(p).isDirectory() });
+  // A relative WOLFPROOF_BIN is from the directory the review was started in, not the repository's top.
+  const fsys = { exists: existsSync, isDir: (p) => statSync(p).isDirectory() };
+  const gate = o["no-scan"] ? null : wolfproofCommand(cwd, process.env, fsys, process.execPath, process.cwd());
   if (!gate) scanNote = "Scan skipped (--no-scan).";
   else if (gate.note) scanNote = gate.note;
   else {

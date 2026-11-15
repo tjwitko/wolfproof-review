@@ -28,6 +28,13 @@ test("wolfproofCommand: the project's own install first, then WOLFPROOF_BIN in e
   assert.deepEqual(at("/other", "/usr/local/bin/wolfproof"), { file: "/usr/local/bin/wolfproof", args: [], via: "WOLFPROOF_BIN (/usr/local/bin/wolfproof)" });
   assert.match(at("/other", "/opt/empty").note, /directory \/opt\/empty, which has no bin\/validate\.mjs/);
   assert.match(at("/other", "/nowhere/validate.mjs").note, /WOLFPROOF_BIN is set to \/nowhere\/validate\.mjs, which does not exist/);
+
+  // A relative path is from the directory the review started in, and comes back absolute.
+  const from = (cwd, bin) => wolfproofCommand("/other", { WOLFPROOF_BIN: bin, HOME: "/home/me" }, fs, "node", cwd);
+  assert.deepEqual(from("/opt/x", "../wolfproof/bin/validate.mjs"), { file: "node", args: ["/opt/wolfproof/bin/validate.mjs"], via: "WOLFPROOF_BIN (../wolfproof/bin/validate.mjs)" });
+  assert.deepEqual(from("/opt", "./wolfproof"), { file: "node", args: ["/opt/wolfproof/bin/validate.mjs"], via: "WOLFPROOF_BIN (./wolfproof)" });
+  assert.deepEqual(from("/usr/local/lib", "../bin/wolfproof"), { file: "/usr/local/bin/wolfproof", args: [], via: "WOLFPROOF_BIN (../bin/wolfproof)" });
+  assert.match(from("/repo/sub", "../wolfproof/bin/validate.mjs").note, /does not exist/);
 });
 
 // A repository with one change, and a stand-in for wolfproof outside it that reports one finding on
@@ -49,6 +56,8 @@ function setup() {
   git("switch", "-qc", "feature");
   writeFileSync(path.join(work, "app.py"), "import db\ndb.run('SELECT * FROM t WHERE id=' + request.args['id'])\n");
   git("commit", "-qam", "change");
+  const sub = path.join(work, "src", "deep");
+  mkdirSync(sub, { recursive: true });
 
   const gate = path.join(tools, "wolfproof", "bin", "validate.mjs");
   writeFileSync(
@@ -62,16 +71,16 @@ console.log(JSON.stringify({ project, exitCode: 1, blocking: 1, incomplete: fals
   const broken = path.join(tools, "broken.mjs");
   writeFileSync(broken, "process.stderr.write('boom'); process.exit(3);\n");
   chmodSync(gate, 0o755);
-  const review = (bin) => {
+  const review = (bin, cwd = work) => {
     const env = { ...process.env, TMPDIR: tmp };
     delete env.WOLFPROOF_BIN;
     if (bin !== undefined) env.WOLFPROOF_BIN = bin;
-    const r = spawnSync(process.execPath, [REVIEW, "local", "main"], { cwd: work, encoding: "utf8", env });
+    const r = spawnSync(process.execPath, [REVIEW, "local", "main"], { cwd, encoding: "utf8", env });
     assert.equal(r.status, 0, r.stderr);
     const dirOf = /^instructions: (.*)$/m.exec(r.stdout)[1].replace(/\/prompt\.md$/, "");
     return { out: r.stdout, sorted: JSON.parse(readFileSync(path.join(dirOf, "sorted.json"), "utf8")) };
   };
-  return { tools, gate, broken, review, done: () => rmSync(dir, { recursive: true, force: true }) };
+  return { tools, gate, broken, sub, review, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 test("a local review runs the wolfproof WOLFPROOF_BIN names, and says when it could not", () => {
@@ -91,6 +100,24 @@ test("a local review runs the wolfproof WOLFPROOF_BIN names, and says when it co
 
     assert.match(s.review("wolfproof-not-on-this-path").out, /wolfproof, from WOLFPROOF_BIN \(wolfproof-not-on-this-path on PATH\), did not produce a result \(it was not found\)/);
     assert.match(s.review(s.broken).out, /did not produce a result \(exit 3\)/);
+  } finally {
+    s.done();
+  }
+});
+
+test("a relative WOLFPROOF_BIN is from the directory the review starts in, not the repository's top", () => {
+  const s = setup();
+  try {
+    // From two levels down, ../../../tools reaches the stand-in; from the top it would not.
+    const bin = path.relative(s.sub, s.gate);
+    assert.ok(!bin.startsWith("/") && bin.startsWith(".."), bin);
+    const { out, sorted } = s.review(bin, s.sub);
+    assert.doesNotMatch(out, /did not produce a result|no scanner findings/);
+    assert.ok(sorted.scan.ran);
+    assert.deepEqual(sorted.findings.map((f) => [f.group, f.check]), [["changed-line", "sast"]]);
+
+    const dir = path.relative(s.sub, path.join(s.tools, "wolfproof"));
+    assert.ok(s.review(dir, s.sub).sorted.scan.ran);
   } finally {
     s.done();
   }

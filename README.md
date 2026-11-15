@@ -112,9 +112,12 @@ fixes or reports what it finds, and opens the pull request.
   build, so expect a few minutes before each pull request Claude opens.
 - **Turn it off** by setting `WOLFPROOF_REVIEW_HOOK=off` in Claude Code's environment, for example
   under `env` in `.claude/settings.json`, or by disabling the plugin.
-- **It is a nudge for Claude, not a control.** It lets the command through whenever it cannot tell,
-  for example outside a git repository, and it does not check that Claude acted on the review. The
-  GitHub workflow is what reviews every pull request, whoever opens it.
+- **A pull request with no `--base`** goes to the repository's default branch, so the review must be
+  against that branch. The hook finds it from `origin/HEAD`, else from `gh repo view`; when neither
+  says, it stops the command and asks for `--base`.
+- **It is a nudge for Claude, not a control.** It lets the command through outside a git repository,
+  and it does not check that Claude acted on the review. The GitHub workflow is what reviews every
+  pull request, whoever opens it.
 - The record of the last review is `wolfproof-review.json` in the repository's git directory, which
   git does not track.
 
