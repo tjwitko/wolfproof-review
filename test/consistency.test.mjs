@@ -36,6 +36,22 @@ test("every third-party action is pinned to a full commit SHA", () => {
   }
 });
 
+test("PLAN.md names the versions the workflows pin", () => {
+  // Dependabot moves the pins; this keeps PLAN's "Pinned:" line from going stale behind it.
+  const line = /^- Pinned: ([\s\S]*?)\.\n/m.exec(read("PLAN.md"))?.[1];
+  assert.ok(line, "PLAN.md has a \"- Pinned:\" line");
+  const named = [...line.matchAll(/`([\w./-]+)` (v\d+\.\d+\.\d+)/g)];
+  assert.ok(named.length >= 4, line);
+  const workflows = read(".github/workflows/review.yml") + read(".github/workflows/ci.yml");
+  for (const [, action, version] of named) {
+    const pinned = [...workflows.matchAll(/uses: ([\w.-]+\/[\w.-]+)@[0-9a-f]{40} # (v\S+)/g)]
+      .filter(([, ref]) => ref === action || ref.endsWith(`/${action}`))
+      .map((m) => m[2]);
+    assert.ok(pinned.length > 0, `no workflow pins ${action}`);
+    assert.deepEqual([...new Set(pinned)], [version], `PLAN.md says ${action} ${version}`);
+  }
+});
+
 test("the marketplace lists the plugin at its folder", () => {
   const market = JSON.parse(read(".claude-plugin/marketplace.json"));
   const plugin = JSON.parse(read("plugins/wolfproof-review/.claude-plugin/plugin.json"));
