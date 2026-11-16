@@ -50,13 +50,21 @@ export function decide(input, { env = process.env, tmp = os.tmpdir() } = {}) {
     }
   };
   const records = [read(path.join(gitDir, STAMP)), read(path.join(tmp, localDirName(root), "meta.json"))].filter(Boolean);
-  const target = pr.base || defaultBranch(git, input.cwd || process.cwd(), env);
+  // Only a name that passes branchName goes into the commands the deny message suggests.
+  if (pr.base && !branchName(pr.base)) {
+    return (
+      `Not opening the pull request yet: its --base is not a branch name this hook accepts (letters, digits, ` +
+      `and . _ / -, not starting with -), so it cannot suggest a review against it. Review against the base by ` +
+      `hand with the /wolfproof-review command, or open the pull request yourself.`
+    );
+  }
+  const target = pr.base || branchName(defaultBranch(git, input.cwd || process.cwd(), env));
   if (!target) {
     return (
       `Not opening the pull request yet: it names no --base, and the hook could not find this repository's ` +
-      `default branch (no origin/HEAD, and \`gh repo view\` did not say), so it cannot tell whether the review ` +
-      `covers it. Run the same gh pr create command again with --base <branch>, after reviewing against that ` +
-      `branch if you have not.`
+      `default branch (no origin/HEAD, and \`gh repo view\` did not say, or named a branch this hook does not ` +
+      `accept), so it cannot tell whether the review covers it. Run the same gh pr create command again with ` +
+      `--base <branch>, after reviewing against that branch if you have not.`
     );
   }
   if (records.some((m) => m.head === head && sameBase(m.base, target))) return null;
@@ -75,6 +83,13 @@ export function decide(input, { env = process.env, tmp = os.tmpdir() } = {}) {
     `project's tests and build) and then read and follow the instructions file it names. Fix what the review ` +
     `finds or tell the user about it, then run the same gh pr create command again. A new commit needs a new review.`
   );
+}
+
+/** `name` when it is safe to put unquoted into a shell command, else null. The default branch comes
+ * from the remote (origin/HEAD, gh repo view), and git allows `;`, `$`, `|`, `&` and `(` in branch
+ * names, so a name is accepted only in this conservative form. */
+export function branchName(name) {
+  return typeof name === "string" && /^(?!-)[\w.\/-]+$/.test(name) ? name : null;
 }
 
 /** The repository's default branch, which is where `gh pr create` without --base opens the pull

@@ -9,7 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { prCreate, sameBase } from "../plugins/wolfproof-review/scripts/lib.mjs";
-import { decide } from "../plugins/wolfproof-review/scripts/pr-hook.mjs";
+import { branchName, decide } from "../plugins/wolfproof-review/scripts/pr-hook.mjs";
 
 const SCRIPTS = fileURLToPath(new URL("../plugins/wolfproof-review/scripts/", import.meta.url));
 
@@ -68,7 +68,7 @@ function repo({ defaultBranch = "main" } = {}) {
   git("add", "-A");
   git("commit", "-qm", "base");
   git("branch", "develop");
-  for (const b of ["main", "develop"]) git("update-ref", `refs/remotes/origin/${b}`, b);
+  for (const b of new Set(["main", "develop", defaultBranch].filter(Boolean))) git("update-ref", `refs/remotes/origin/${b}`, "HEAD");
   if (defaultBranch) git("symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${defaultBranch}`);
   git("switch", "-qc", "feature");
   writeFileSync(path.join(work, "app.py"), "print('hello')\nprint('more')\n");
@@ -138,6 +138,41 @@ test("a pull request with no --base is stopped when the default branch cannot be
     r.review("main", "--no-scan");
     assert.match(at("gh pr create --fill"), /names no --base, and the hook could not find this repository's default branch/);
     assert.equal(at("gh pr create --base main --fill"), null);
+  } finally {
+    r.done();
+  }
+});
+
+test("branchName accepts plain branch names only", () => {
+  for (const b of ["main", "origin/main", "release/1.2", "feature_x-y.z"]) assert.equal(branchName(b), b);
+  for (const b of ["x;touch$IFS/tmp/pwned", "a$(id)", "a|b", "a&b", "a b", "-main", "--upload-pack=x", "", null, undefined]) assert.equal(branchName(b), null, String(b));
+});
+
+test("a default branch whose name could run as a command is treated as not found", () => {
+  const evil = "x;touch$IFS/tmp/pwned";
+  const r = repo({ defaultBranch: evil });
+  try {
+    assert.equal(r.git("symbolic-ref", "--short", "refs/remotes/origin/HEAD"), `origin/${evil}`);
+    const at = (command) => decide(bash(r.work, command), { env: {}, tmp: r.tmp });
+    r.review("main", "--no-scan");
+    const reason = at("gh pr create --fill");
+    assert.match(reason, /names no --base, and the hook could not find this repository's default branch/);
+    assert.ok(!reason.includes(evil) && !reason.includes("pwned") && !reason.includes(";touch"), reason);
+    assert.equal(at("gh pr create --base main --fill"), null);
+  } finally {
+    r.done();
+  }
+});
+
+test("a --base whose name could run as a command is not put into the suggested command", () => {
+  const r = repo();
+  try {
+    const at = (command) => decide(bash(r.work, command), { env: {}, tmp: r.tmp });
+    for (const command of [`gh pr create --base 'x;touch$IFS/tmp/pwned'`, `gh pr create -B 'a$(id)'`, "gh pr create --base=-main"]) {
+      const reason = at(command);
+      assert.match(reason, /its --base is not a branch name this hook accepts/, command);
+      assert.ok(!/pwned|\$\(id\)|-main/.test(reason), reason);
+    }
   } finally {
     r.done();
   }
