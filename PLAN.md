@@ -185,7 +185,7 @@ Each case runs three times. Results vary between runs of the same model, so one 
 
 - No `fail-on` input yet (phase 3). Inputs: `model`, `max-comments`, `paths-ignore`, and `review-ref`
   for this repository's own self-review.
-- Pinned: `claude-code-action` v1.0.266 (first v1.0.250, moved by Dependabot);
+- Pinned: `claude-code-action` v1.0.269;
   `actions/checkout` v7.0.1; `upload-artifact` v7.0.2; `download-artifact` v8.0.2.
 - Summary-only mode when there is no key, or the pull request comes from a fork.
 - After Claude, a script lists the comments it posted and flags any on an unchanged line, in the
