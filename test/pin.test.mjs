@@ -53,5 +53,8 @@ test("actionOutputs reads an Action's declared outputs", () => {
 test("changedPaths keeps every character of every path, the first included", () => {
   assert.deepEqual(changedPaths(" M .github/workflows/review.yml\0 M README.md\0?? new file.txt\0"), [".github/workflows/review.yml", "README.md", "new file.txt"]);
   assert.deepEqual(changedPaths("R  b.md\0a.md\0 M c.md\0"), ["b.md", "c.md"]);
+  // A rename in the worktree column, as after `git add -N`: the original path is not an entry.
+  assert.deepEqual(changedPaths(" R NEW.md\0README.md\0"), ["NEW.md"]);
+  assert.deepEqual(changedPaths(" C copy.md\0orig.md\0 M c.md\0"), ["copy.md", "c.md"]);
   assert.deepEqual(changedPaths(""), []);
 });

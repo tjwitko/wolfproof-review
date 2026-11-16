@@ -51,7 +51,8 @@ export function changedPaths(z) {
   for (let i = 0; i < parts.length; i++) {
     if (!parts[i]) continue;
     out.push(parts[i].slice(3));
-    if (/^[RC]/.test(parts[i])) i++; // the original path follows a rename or copy
+    // The original path follows a rename or copy, in the index column or the worktree's (git add -N).
+    if (/^(?:[RC].|.[RC])/.test(parts[i])) i++;
   }
   return out;
 }
