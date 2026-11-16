@@ -2,6 +2,7 @@
 // touched, the summary comment, and the prompt. No network and no AI here, so all of it is tested.
 
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 export const MARKER = "<!-- wolfproof-review:summary -->";
 export const GROUPS = ["changed-line", "changed-file", "elsewhere"];
@@ -349,17 +350,76 @@ export function localDirName(repoRoot) {
 export function prCreate(command) {
   const m = /(?:^|[\s;&|(`])gh\s+pr\s+(?:create|new)(?=\s|$|[;&|)`])/.exec(String(command));
   if (!m) return null;
-  // Only this command's own arguments: up to the next command on the line.
-  const rest = command.slice(m.index + m[0].length).split(/&&|\|\||[;\n|]/)[0];
-  const b = /(?:^|\s)(?:--base|-B)(?:=|\s+)("[^"]*"|'[^']*'|[^\s"']+)/.exec(rest);
-  return { base: b ? b[1].replace(/^["']|["']$/g, "") : null };
+  // Only this command's own arguments: up to the next command on the line. As words, the way the
+  // shell splits them, so a `;` or a `--base` inside a quoted --title is part of the title.
+  const words = shellWords(command.slice(m.index + m[0].length));
+  // gh's flags that take a value, so that a value such as `--title -B` is not read as a flag. The
+  // last --base wins, as in gh.
+  const LONG = /^--(?:assignee|base|body|body-file|head|label|milestone|project|recover|repo|reviewer|template|title)$/;
+  const SHORT = "aBbFHlmprRTt";
+  let base = null;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === "--") break;
+    if (w.startsWith("--")) {
+      if (w.startsWith("--base=")) base = w.slice("--base=".length);
+      else if (LONG.test(w)) {
+        const value = words[++i];
+        if (w === "--base") base = value ?? null;
+      }
+    } else if (/^-[A-Za-z]/.test(w)) {
+      // Shorthands, which gh lets you run together: -dB develop, -Bdevelop, -B=develop.
+      for (let j = 1; j < w.length; j++) {
+        if (!SHORT.includes(w[j])) continue;
+        const value = j + 1 < w.length ? w.slice(j + 1).replace(/^=/, "") : words[++i];
+        if (w[j] === "B") base = value ?? null;
+        break;
+      }
+    }
+  }
+  return { base: base || null };
 }
 
-/** Whether a review against `reviewed` covers a pull request into `requested`. A pull request that
- * names no base goes to the default branch, which is what a review with no base uses too. */
+/** The words of the first command in a shell command line: split on unquoted blanks, with quotes and
+ * backslashes removed, up to the first `;`, `&&`, `||`, `|` or newline outside quotes. */
+export function shellWords(text) {
+  const s = String(text);
+  const words = [];
+  let word = null;
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      else word += c;
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === "\\" && i + 1 < s.length && '"\\$`\n'.includes(s[i + 1])) word += s[++i];
+      else word += c;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+      word ??= "";
+    } else if (c === "\\" && i + 1 < s.length) {
+      if (s[i + 1] !== "\n") word = (word ?? "") + s[i + 1];
+      i++;
+    } else if (c === ";" || c === "\n" || c === "|" || (c === "&" && s[i + 1] === "&")) {
+      break;
+    } else if (/\s/.test(c)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else {
+      word = (word ?? "") + c;
+    }
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/** Whether a review against `reviewed` covers a pull request into `requested`. Both must be named:
+ * the hook resolves a pull request with no --base to the repository's default branch first. */
 export function sameBase(reviewed, requested) {
-  if (!requested) return true;
-  const short = (b) => String(b || "").replace(/^(?:refs\/remotes\/|refs\/heads\/)?(?:origin\/)?/, "");
+  if (!reviewed || !requested) return false;
+  const short = (b) => String(b).replace(/^(?:refs\/remotes\/|refs\/heads\/)?(?:origin\/)?/, "");
   return short(reviewed) === short(requested);
 }
 
@@ -368,11 +428,13 @@ export function sameBase(reviewed, requested) {
 /**
  * How a local review runs wolfproof: the project's own install first, the version the project chose,
  * then WOLFPROOF_BIN. WOLFPROOF_BIN names wolfproof's bin/validate.mjs, its package directory, or a
- * command on PATH such as `wolfproof`. `fs` is { exists(p), isDir(p) }, passed in for the tests.
+ * command on PATH such as `wolfproof`. A relative path is taken from `cwd`, the directory the review
+ * was started in, and comes back absolute, because wolfproof runs from the repository's top, which can
+ * be another directory. `fs` is { exists(p), isDir(p) }, passed in for the tests.
  * @returns {{file: string, args: string[], via: string} | {note: string}}
  *   `file` and `args` for spawnSync, with "." and "--json" still to add; or why it does not run.
  */
-export function wolfproofCommand(root, env, fs, node = process.execPath) {
+export function wolfproofCommand(root, env, fs, node = process.execPath, cwd = process.cwd()) {
   const sep = /[\\/]/;
   const own = `${root}/node_modules/wolfproof/bin/validate.mjs`;
   if (fs.exists(own)) return { file: node, args: [own], via: "this project's node_modules/wolfproof" };
@@ -385,12 +447,12 @@ export function wolfproofCommand(root, env, fs, node = process.execPath) {
     };
   }
   if (!sep.test(bin)) return { file: bin, args: [], via: `WOLFPROOF_BIN (${bin} on PATH)` };
-  const abs = (bin.startsWith("~/") && env.HOME ? `${env.HOME}${bin.slice(1)}` : bin).replace(/(?<=.)[\\/]+$/, "");
+  const abs = path.resolve(cwd, bin.startsWith("~/") && env.HOME ? `${env.HOME}${bin.slice(1)}` : bin);
   if (!fs.exists(abs)) {
     return { note: `WOLFPROOF_BIN is set to ${bin}, which does not exist, so there are no scanner findings; the review uses the rulebook alone.` };
   }
   if (fs.isDir(abs)) {
-    const inside = `${abs}/bin/validate.mjs`;
+    const inside = path.join(abs, "bin", "validate.mjs");
     if (!fs.exists(inside)) {
       return { note: `WOLFPROOF_BIN is set to the directory ${bin}, which has no bin/validate.mjs, so there are no scanner findings; the review uses the rulebook alone.` };
     }

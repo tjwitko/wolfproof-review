@@ -6,9 +6,13 @@
 // "Reviewed" means `review.mjs local` prepared a review of the current HEAD, against the base the pull
 // request names (meta.json in the review's directory). A new commit needs a new review.
 //
-// This is a nudge for Claude, not a control: anything it cannot read lets the call through, and
-// WOLFPROOF_REVIEW_HOOK=off in Claude Code's environment turns it off. The GitHub workflow is the
-// review that runs on every pull request regardless.
+// A pull request that names no --base goes to the repository's default branch: origin/HEAD, or what
+// `gh repo view` says. When neither tells, the call is denied, with a request to name --base.
+//
+// This is a nudge for Claude, not a control. It lets the call through when it cannot read the hook's
+// input or the command is not run in a git repository with a commit, and WOLFPROOF_REVIEW_HOOK=off in
+// Claude Code's environment turns it off. A review record it cannot read counts as no review, so the
+// call is denied. The GitHub workflow is the review that runs on every pull request regardless.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -46,22 +50,68 @@ export function decide(input, { env = process.env, tmp = os.tmpdir() } = {}) {
     }
   };
   const records = [read(path.join(gitDir, STAMP)), read(path.join(tmp, localDirName(root), "meta.json"))].filter(Boolean);
-  if (records.some((m) => m.head === head && sameBase(m.base, pr.base))) return null;
+  // Only a name that passes branchName goes into the commands the deny message suggests.
+  if (pr.base && !branchName(pr.base)) {
+    return (
+      `Not opening the pull request yet: its --base is not a branch name this hook accepts (letters, digits, ` +
+      `and . _ / -, not starting with -), so it cannot suggest a review against it. Review against the base by ` +
+      `hand with the /wolfproof-review command, or open the pull request yourself.`
+    );
+  }
+  const target = pr.base || branchName(defaultBranch(git, input.cwd || process.cwd(), env));
+  if (!target) {
+    return (
+      `Not opening the pull request yet: it names no --base, and the hook could not find this repository's ` +
+      `default branch (no origin/HEAD, and \`gh repo view\` did not say, or named a branch this hook does not ` +
+      `accept), so it cannot tell whether the review covers it. Run the same gh pr create command again with ` +
+      `--base <branch>, after reviewing against that branch if you have not.`
+    );
+  }
+  if (records.some((m) => m.head === head && sameBase(m.base, target))) return null;
   const meta = records.find((m) => m.head === head) || records[0] || null;
 
-  const base = pr.base || "";
   const why = !meta
     ? `this repository's commit ${head.slice(0, 7)} has not been reviewed with wolfproof-review`
     : meta.head !== head
       ? `the last wolfproof review was of commit ${String(meta.head).slice(0, 7)}, and HEAD is now ${head.slice(0, 7)}`
-      : `the last wolfproof review was against ${meta.base}, and this pull request goes to ${pr.base}`;
+      : `the last wolfproof review was against ${meta.base}, and this pull request goes to ${target}` +
+        `${pr.base ? "" : " (the default branch, since it names no --base)"}`;
   return (
     `Not opening the pull request yet: ${why}. Review it first: run the /wolfproof-review command` +
-    `${base ? ` with the argument ${base}` : ""}, or prepare it directly with ` +
-    `\`node "${REVIEW}" local${base ? ` ${base}` : ""}\` (Bash timeout 900000 ms; when wolfproof is installed it runs the ` +
+    ` with the argument ${target}, or prepare it directly with ` +
+    `\`node "${REVIEW}" local ${target}\` (Bash timeout 900000 ms; when wolfproof is installed it runs the ` +
     `project's tests and build) and then read and follow the instructions file it names. Fix what the review ` +
     `finds or tell the user about it, then run the same gh pr create command again. A new commit needs a new review.`
   );
+}
+
+/** `name` when it is safe to put unquoted into a shell command, else null. The default branch comes
+ * from the remote (origin/HEAD, gh repo view), and git allows `;`, `$`, `|`, `&` and `(` in branch
+ * names, so a name is accepted only in this conservative form. */
+export function branchName(name) {
+  return typeof name === "string" && /^(?!-)[\w.\/-]+$/.test(name) ? name : null;
+}
+
+/** The repository's default branch, which is where `gh pr create` without --base opens the pull
+ * request: origin/HEAD, else `gh repo view`. null when neither says. */
+function defaultBranch(git, cwd, env) {
+  try {
+    return git("symbolic-ref", "--short", "refs/remotes/origin/HEAD") || null; // "origin/main"
+  } catch {
+    /* not set in this clone; ask gh */
+  }
+  try {
+    const name = execFileSync("gh", ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"], {
+      cwd,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 15000,
+    }).trim();
+    return name || null;
+  } catch {
+    return null;
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
