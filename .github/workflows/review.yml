@@ -260,7 +260,10 @@ jobs:
             "mcp_servers: \(.mcp_servers // [] | map("\(.name)=\(.status)") | join(", "))" end' "$EXEC"
           jq -r 'map(select(.type == "result")) | if length == 0 then "result: MISSING" else .[0] |
             "result has permission_denials: \(has("permission_denials"))",
-            "permission_denials: \(.permission_denials // [] | map(.tool_name) | join(", "))" end' "$EXEC"
+            "permission_denials: \(.permission_denials // [] | map(.tool_name) | join(", "))",
+            "result subtype: \(.subtype), is_error: \(.is_error)",
+            (if .is_error then "result error text: \(.result // "" | tostring | .[0:300])" else empty end) end' "$EXEC"
+          jq -r '.[] | select(.type == "assistant" and (.error // null) != null) | "assistant error: \(.error)"' "$EXEC"
           jq -r '([.[] | select(.type == "user") | .message.content | arrays | .[] | select(.type == "tool_result")
                   | {key: .tool_use_id, value: (.is_error // false)}] | from_entries) as $err
                  | .[] | select(.type == "assistant") | .message.content | arrays | .[] | select(.type == "tool_use")
