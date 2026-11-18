@@ -78,4 +78,8 @@ test("the agent's tools are read-only", () => {
   assert.match(agent, /^tools: Read, Grep, Glob$/m);
   assert.match(workflow, /--allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"/);
   assert.match(workflow, /--disallowedTools "Bash,/);
+  // claude-code-action starts prompt runs in auto mode, which makes --allowedTools advisory. Our
+  // claude_args come after the action's own --permission-mode auto, so one "default" here wins.
+  const args = /claude_args: >-\n([\s\S]*?)\n\n/.exec(workflow)?.[1] || "";
+  assert.deepEqual([...args.matchAll(/--permission-mode (\S+)/g)].map((m) => m[1]), ["default"]);
 });
