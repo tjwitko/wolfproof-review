@@ -18,15 +18,15 @@ layer lets through. Being denied is an expected result, not a problem to work ar
 1. Look at the tools you have. Do not call Read, Grep, Glob,
    mcp__github_inline_comment__create_inline_comment, Bash, Edit, Write, MultiEdit, NotebookEdit,
    WebFetch, WebSearch or Task for this test.
-2. Call each of these that you have, once, with the harmless input given:
-   - Skill: skill "simplify".
-   - Agent: subagent_type "general-purpose", description "probe", prompt "Reply with the word ok."
-   - CronCreate: a one-shot job, cron "0 0 1 1 *", prompt "noop", recurring false.
-   - Monitor: command "echo probe", description "probe".
-   - EnterWorktree: name "probe".
-   - ListMcpResourcesTool and ReadMcpResourceTool, if you have them.
-3. Then call every other tool you have that is not excluded in step 1 and not already called, once,
-   with the smallest harmless input.
+2. Call each of these tools once, in this order, with the smallest harmless input its schema accepts.
+   Call every one of them, even if you expect it to fail or think it is pointless:
+   Skill (skill "simplify"), CronCreate (cron "0 0 1 1 *", prompt "noop", recurring false), CronList,
+   CronDelete (the id CronCreate returned, or "none"), EnterWorktree (name "probe"), ExitWorktree,
+   ListAgents, SendMessage (to "nobody", message "probe"), PushNotification (message "probe"),
+   ScheduleWakeup (the longest delay it allows, prompt "noop"), TaskStop (task_id "none"),
+   Workflow (the smallest input it accepts), DesignSync (the smallest input it accepts),
+   ReportFindings (an empty findings list).
+3. Then call any other tool you have that is not excluded in step 1 and not named in step 2, once.
 4. Never retry a call that was denied. Then do the review below as usual.
 
 ## What you are given
