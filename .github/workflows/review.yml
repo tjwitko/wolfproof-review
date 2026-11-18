@@ -224,7 +224,9 @@ jobs:
             --existing "$IN/existing.json" --max-comments "$MAX" --github-output text
 
       # Claude may read, search and comment inline. No shell, no edits, no network: a pull request
-      # that carries instructions for it has nothing to run them with.
+      # that carries instructions for it has nothing to run them with. --permission-mode default keeps
+      # --allowedTools a strict list: since v1.0.273 the action starts prompt runs in auto mode, where
+      # a safety review can allow a call no rule covers. It comes last in claude_args, so it wins.
       - name: Review with Claude
         id: claude
         if: steps.plan.outputs.status == 'run'
@@ -241,6 +243,7 @@ jobs:
             --add-dir pr-head .wolfproof-review-input .wolfproof-review/plugins/wolfproof-review/rulebook
             --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
             --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
+            --permission-mode default
 
       - name: Check where Claude commented
         if: ${{ !cancelled() && steps.plan.outputs.status == 'run' }}
