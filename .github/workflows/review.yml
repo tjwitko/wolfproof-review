@@ -245,6 +245,27 @@ jobs:
             --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
             --permission-mode default
 
+      # Throwaway: prints only the init message's mode, tools and MCP servers, the result's denials by
+      # tool name, and each tool call's name with whether its result was an error. No inputs or outputs.
+      - name: Print the session's permission evidence
+        if: ${{ !cancelled() && steps.plan.outputs.status == 'run' }}
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          if [ -z "$EXEC" ] || [ ! -f "$EXEC" ]; then echo "no execution file"; exit 0; fi
+          jq -r 'map(select(.type == "system" and .subtype == "init")) | if length == 0 then "init: MISSING" else .[0] |
+            "init has permissionMode: \(has("permissionMode")), tools: \(has("tools")), mcp_servers: \(has("mcp_servers"))",
+            "permissionMode: \(.permissionMode)",
+            "tools: \(.tools // [] | join(", "))",
+            "mcp_servers: \(.mcp_servers // [] | map("\(.name)=\(.status)") | join(", "))" end' "$EXEC"
+          jq -r 'map(select(.type == "result")) | if length == 0 then "result: MISSING" else .[0] |
+            "result has permission_denials: \(has("permission_denials"))",
+            "permission_denials: \(.permission_denials // [] | map(.tool_name) | join(", "))" end' "$EXEC"
+          jq -r '([.[] | select(.type == "user") | .message.content | arrays | .[] | select(.type == "tool_result")
+                  | {key: .tool_use_id, value: (.is_error // false)}] | from_entries) as $err
+                 | .[] | select(.type == "assistant") | .message.content | arrays | .[] | select(.type == "tool_use")
+                 | "call \(.name): \(if $err[.id] == null then "no result" elif $err[.id] then "error" else "ok" end)"' "$EXEC"
+
       - name: Check where Claude commented
         if: ${{ !cancelled() && steps.plan.outputs.status == 'run' }}
         env:
