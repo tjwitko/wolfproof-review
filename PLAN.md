@@ -133,6 +133,10 @@ scanner evidence and says so at the top.
     limit, before anything is posted. The after-run check stays as an independent second look.
   - **The log** gets each call's tool name and outcome, never content, and a provider's text never
     starts a line, so it cannot become a workflow command.
+- **The scan's artifact is the pull request's to shape.** The scan job runs its code, so the review
+  job keeps only the four files the scan hands over (`diff.patch`, `files.txt`, `result.json`,
+  `meta.json`), as plain files, and writes everything else itself. The head commit for comments comes
+  from the workflow's event. The diff itself is still the scan's.
 - **The key is in one step's environment:** the Review step's. A test fails if another step, or the
   job, gets it.
 - **The key goes only to the provider's URL.** Requests refuse redirects, since `fetch` would carry

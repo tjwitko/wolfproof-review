@@ -315,7 +315,7 @@ test("review.mjs run with no key writes a failed run.json and exits 1, without c
     const cli = new URL("../plugins/wolfproof-review/scripts/review.mjs", import.meta.url).pathname;
     const env = { ...process.env };
     delete env.REVIEW_API_KEY;
-    const r = spawnSync(process.execPath, [cli, "run", "--provider", "anthropic", "--prompt", "prompt.md", "--code-dir", "pr-head", "--input-dir", "input", "--rulebook-dir", "rulebook", "--diff", "input/diff.patch", "--max-comments", "5", "--out", "run.json"], { cwd: w.work, env, encoding: "utf8" });
+    const r = spawnSync(process.execPath, [cli, "run", "--provider", "anthropic", "--prompt", "prompt.md", "--code-dir", "pr-head", "--input-dir", "input", "--rulebook-dir", "rulebook", "--diff", "input/diff.patch", "--max-comments", "5", "--head", "0123abc", "--out", "run.json"], { cwd: w.work, env, encoding: "utf8" });
     assert.equal(r.status, 1);
     const out = JSON.parse(readFileSync(path.join(w.work, "run.json"), "utf8"));
     assert.equal(out.status, "failed");

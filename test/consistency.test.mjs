@@ -90,3 +90,15 @@ test("the reviewer's tools are read-only, and only the review step holds the key
   assert.deepEqual(withKey.map((st) => st.split("\n")[0]), ["Review"]);
   assert.match(workflow, /node "\$CLI" run --provider/);
 });
+
+test("the review job keeps only the scan's own files, and reads its own results only when it ran", () => {
+  const review = workflow.slice(workflow.indexOf("  review:\n"));
+  const download = review.indexOf("- name: Download the scan");
+  const trim = review.indexOf("- name: Keep only the scan's own files");
+  const sort = review.indexOf("- name: Sort the findings");
+  assert.ok(download > 0 && trim > download && sort > trim, "the trim runs after the download and before anything reads the files");
+  assert.match(review, /find "\$IN" -mindepth 1 -maxdepth 1 \\\( ! -type f -o ! \\\( -name diff\.patch -o -name files\.txt -o -name result\.json -o -name meta\.json \\\) \\\) -exec rm -rf \{\} \+/);
+  assert.match(workflow, /# Earlier steps ran the pull request's code[^\n]*\n {10}rm -rf "\$out"\n {10}mkdir -p "\$out"/);
+  assert.match(review, /if \[ "\$STATUS" = run \]; then\n\s+\[ -f "\$IN\/run\.json" \]/);
+  assert.match(review, /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}[\s\S]*--head "\$HEAD_SHA"/);
+});

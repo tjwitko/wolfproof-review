@@ -102,6 +102,8 @@ jobs:
           TOOLING: ${{ steps.tooling.outcome }}
         run: |
           out="$RUNNER_TEMP/wolfproof-review-input"
+          # Earlier steps ran the pull request's code, which could have left files here.
+          rm -rf "$out"
           mkdir -p "$out"
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           git -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$out/diff.patch"
@@ -181,6 +183,14 @@ jobs:
           name: wolfproof-review-input
           path: .wolfproof-review-input
 
+      # The scan job ran the pull request's code, so its artifact may carry more than the scan wrote.
+      # Keep the four files the scan hands over, as plain files; this job writes everything else.
+      - name: Keep only the scan's own files
+        run: |
+          mkdir -p "$IN"
+          find "$IN" -mindepth 1 -maxdepth 1 \( ! -type f -o ! \( -name diff.patch -o -name files.txt -o -name result.json -o -name meta.json \) \) -exec rm -rf {} +
+          ls -A "$IN"
+
       - name: Sort the findings by what the pull request touched
         env:
           IGNORE: ${{ inputs.paths-ignore }}
@@ -258,6 +268,7 @@ jobs:
         env:
           REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || (inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY) || '' }}
           GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PROVIDER: ${{ inputs.provider }}
           MODEL: ${{ inputs.model }}
           BASE_URL: ${{ inputs.base-url }}
@@ -265,7 +276,7 @@ jobs:
         run: |
           node "$CLI" run --provider "$PROVIDER" --model "$MODEL" --base-url "$BASE_URL" --prompt "$IN/prompt.md" \
             --code-dir pr-head --input-dir "$IN" --rulebook-dir "$PLUGIN/rulebook" --diff "$IN/diff.patch" \
-            --max-comments "$MAX" --out "$IN/run.json"
+            --max-comments "$MAX" --head "$HEAD_SHA" --out "$IN/run.json"
 
       - name: Check where the comments landed
         if: ${{ !cancelled() && steps.plan.outputs.status == 'run' }}
@@ -288,7 +299,9 @@ jobs:
             *) status="$STATUS" ;;
           esac
           args=()
-          [ -f "$IN/run.json" ] && args+=(--run "$IN/run.json")
-          [ -f "$IN/check.json" ] && args+=(--check "$IN/check.json")
+          if [ "$STATUS" = run ]; then
+            [ -f "$IN/run.json" ] && args+=(--run "$IN/run.json")
+            [ -f "$IN/check.json" ] && args+=(--check "$IN/check.json")
+          fi
           [ -f "$IN/sorted.json" ] && args+=(--sorted "$IN/sorted.json") || args+=(--sorted /dev/null)
           node "$CLI" summary "${args[@]}" --status "$status" --post

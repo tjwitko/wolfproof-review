@@ -6,7 +6,7 @@
 //                       [--existing F] [--mode ci|local] (--out F | --github-output NAME)
 //   review.mjs existing --out F                          (GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER)
 //   review.mjs run      --provider P [--model M] [--base-url U] --prompt F --code-dir D --input-dir D
-//                       --rulebook-dir D --diff F --max-comments N --out F [--max-turns N] [--minutes N]
+//                       --rulebook-dir D --diff F --max-comments N --head SHA --out F [--max-turns N] [--minutes N]
 //                                                    (REVIEW_API_KEY, and the same variables as existing)
 //   review.mjs check    --diff F --since ISO --out F     (the same variables)
 //   review.mjs summary  --sorted F [--status STATUS] [--run F] [--check F] [--note TEXT] [--post]
@@ -111,8 +111,7 @@ async function existing(o) {
 // The model's review: plain API calls to the chosen provider, with only agent.mjs's four tools. The
 // key is read here and goes nowhere but the provider's request headers.
 async function review(o) {
-  need(o, "provider", "prompt", "code-dir", "input-dir", "rulebook-dir", "diff", "max-comments", "out");
-  const meta = readJson(path.join(o["input-dir"], "meta.json")) || {};
+  need(o, "provider", "prompt", "code-dir", "input-dir", "rulebook-dir", "diff", "max-comments", "head", "out");
   let out;
   try {
     const a = adapter({
@@ -128,7 +127,9 @@ async function review(o) {
       codeRoot: o["code-dir"],
       changed: parseDiff(readText(o.diff)),
       maxComments: Number(o["max-comments"]),
-      post: (c) => postInlineComment({ ...c, commitId: meta.head }),
+      // The head commit from the workflow's event, not from the scan's files, which the pull request's
+      // code could have written.
+      post: (c) => postInlineComment({ ...c, commitId: o.head }),
     });
     out = await runReview({
       adapter: a,
