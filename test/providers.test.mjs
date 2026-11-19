@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adapter, send, errorMessage, ProviderError } from "../plugins/wolfproof-review/scripts/providers.mjs";
+import { adapter, send, errorMessage, redactKey, ProviderError } from "../plugins/wolfproof-review/scripts/providers.mjs";
 import { TOOLS } from "../plugins/wolfproof-review/scripts/agent.mjs";
 
 const json = (status, body, headers = {}) => ({
@@ -109,4 +109,35 @@ test("errorMessage reads both providers' error bodies", () => {
   assert.equal(errorMessage('{"error":"nope"}'), "nope");
   assert.equal(errorMessage("<html>502</html>"), "<html>502</html>");
   assert.equal(errorMessage(""), "no response body");
+});
+
+test("send never follows a redirect, so a gateway cannot pass the key on", async () => {
+  const a = adapter({ provider: "anthropic", apiKey: "k" });
+  let init;
+  await send(a, a.initial("x"), TOOLS, { fetchImpl: async (u, i) => ((init = i), json(200, { content: [] })) });
+  assert.equal(init.redirect, "error");
+});
+
+test("a rejected key gets a fixed message, and no error carries the key", async () => {
+  const key = "sk-proj-0123456789abcdefWXYZ";
+  const a = adapter({ provider: "openai", apiKey: key, model: "m" });
+  const fail = (status, message) => send(a, a.initial("x"), TOOLS, { fetchImpl: async () => json(status, { error: { message } }), sleep: async () => {}, retries: 0 });
+  await assert.rejects(fail(401, `Incorrect API key provided: ${key.slice(0, 3)}************${key.slice(-4)}.`), (err) => {
+    assert.equal(err.message, "openai rejected the API key (401)");
+    return true;
+  });
+  await assert.rejects(fail(403, "forbidden"), /rejected the API key \(403\)/);
+  await assert.rejects(fail(400, `bad request for key ${key} and ${key.slice(4, 20)}`), (err) => {
+    assert.doesNotMatch(err.message, /0123456789|abcdef|WXYZ/);
+    assert.match(err.message, /openai answered 400: bad request for key \[redacted\] and \[redacted\]/);
+    return true;
+  });
+});
+
+test("redactKey removes the key and any long piece of it, and leaves other text", () => {
+  assert.equal(redactKey("key=sk-abcdefghijkl end", "sk-abcdefghijkl"), "key=[redacted] end");
+  assert.equal(redactKey("tail ghijkl..., head sk-abcd", "sk-abcdefghijkl"), "tail ghijkl..., head sk-abcd");
+  assert.equal(redactKey("head sk-abcde", "sk-abcdefghijkl"), "head [redacted]");
+  assert.equal(redactKey("piece cdefghij here", "sk-abcdefghijkl"), "piece [redacted] here");
+  assert.equal(redactKey("nothing", ""), "nothing");
 });

@@ -135,6 +135,10 @@ scanner evidence and says so at the top.
     starts a line, so it cannot become a workflow command.
 - **The key is in one step's environment:** the Review step's. A test fails if another step, or the
   job, gets it.
+- **The key goes only to the provider's URL.** Requests refuse redirects, since `fetch` would carry
+  `x-api-key` to another host. A rejected key is reported as "rejected the API key", never with the
+  provider's text, and any other error has the key, and any 8-character piece of it, cut out before
+  it reaches `run.json` or the summary.
 - **The provider sees the pull request.** Whatever the team's provider is, the diff and the files the
   model reads go to it. A team that needs them kept in-house points `base-url` at its own gateway.
 - **Everything is pinned:** wolfproof by tag, every action by SHA. The plugin version is pinned in

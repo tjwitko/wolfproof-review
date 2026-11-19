@@ -29,7 +29,11 @@ export function adapter({ provider, apiKey, model, baseUrl }) {
   if (!m) throw new ProviderError(`the ${provider} provider needs a model`);
   const base = (baseUrl || d.baseUrl).replace(/\/+$/, "");
   if (!/^https:\/\/[^\s/]+/.test(base)) throw new ProviderError("base-url must be an https:// URL");
-  return provider === "anthropic" ? anthropic(apiKey, m, base) : openai(apiKey, m, base);
+  const a = provider === "anthropic" ? anthropic(apiKey, m, base) : openai(apiKey, m, base);
+  // An error message goes to run.json and the public summary, so the key, or any long piece of it,
+  // never does.
+  a.redact = (text) => redactKey(text, apiKey);
+  return a;
 }
 
 function anthropic(apiKey, model, base) {
@@ -105,6 +109,21 @@ function openai(apiKey, model, base) {
   };
 }
 
+/** The text with the key, and every run of 8 or more characters taken from it, replaced. */
+export function redactKey(text, key) {
+  const t = String(text).slice(0, 2000);
+  if (!key) return t;
+  const n = Math.min(8, key.length);
+  const hit = new Array(t.length).fill(false);
+  for (let i = 0; i + n <= t.length; i++) if (key.includes(t.slice(i, i + n))) hit.fill(true, i, i + n);
+  let out = "";
+  for (let i = 0; i < t.length; i++) {
+    if (!hit[i]) out += t[i];
+    else if (i === 0 || !hit[i - 1]) out += "[redacted]";
+  }
+  return out;
+}
+
 const RETRY = (status) => status === 408 || status === 409 || status === 429 || status >= 500;
 
 /** The error message a provider put in its response body, else the start of the body. */
@@ -128,7 +147,9 @@ export async function send(a, messages, tools, { fetchImpl = fetch, sleep = (ms)
     const { url, headers, body } = a.request(messages, tools);
     let res;
     try {
-      res = await fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      // No redirects: fetch drops Authorization on a cross-origin redirect but keeps x-api-key, so a
+      // redirecting base-url would pass the key on.
+      res = await fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
     } catch (err) {
       if (attempt < retries) {
         await sleep(backoff(attempt));
@@ -137,7 +158,9 @@ export async function send(a, messages, tools, { fetchImpl = fetch, sleep = (ms)
       throw new ProviderError(`the request to ${a.provider} failed (${err.name === "TimeoutError" ? "timed out" : err.name || "network error"})`);
     }
     if (res.ok) return a.parse(await res.json());
-    const message = errorMessage(await res.text());
+    // A 401 or 403 body can echo part of the key ("Incorrect API key provided: sk-…abcd").
+    if (res.status === 401 || res.status === 403) throw new ProviderError(`${a.provider} rejected the API key (${res.status})`, res.status);
+    const message = (a.redact || String)(errorMessage(await res.text()));
     if (RETRY(res.status) && attempt < retries) {
       const after = Number(res.headers?.get?.("retry-after"));
       await sleep(Number.isFinite(after) && after > 0 ? Math.min(after, 60) * 1000 : backoff(attempt));
