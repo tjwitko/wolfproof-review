@@ -325,3 +325,26 @@ test("review.mjs run with no key writes a failed run.json and exits 1, without c
     w.done();
   }
 });
+
+test("runReview: a reply that was cut off or refused fails the run instead of ending it as done", async () => {
+  const w = workspace();
+  try {
+    const { t, posted } = tools(w.work);
+    const cases = [
+      ["anthropic", reply({ content: [{ type: "tool_use", id: "x", name: "create_inline_comment", input: { path: "app/views.py", line: 5 } }], usage: {}, stop_reason: "max_tokens" })],
+      ["anthropic", reply({ content: [], usage: {}, stop_reason: "refusal" })],
+      ["openai", reply({ choices: [{ message: { content: "partial" }, finish_reason: "length" }] })],
+      ["openai", reply({ choices: [{ message: { content: null }, finish_reason: "content_filter" }] })],
+    ];
+    for (const [provider, r] of cases) {
+      const a = adapter({ provider, apiKey: "k", model: "m" });
+      const out = await runReview({ adapter: a, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: async () => r } });
+      assert.equal(out.status, "failed", provider);
+      assert.match(out.error, /the reply was cut off \((max_tokens|refusal|length|content_filter)\)/);
+      assert.deepEqual(out.calls, []);
+    }
+    assert.equal(posted.length, 0);
+  } finally {
+    w.done();
+  }
+});

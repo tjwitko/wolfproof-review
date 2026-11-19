@@ -58,6 +58,8 @@ export const TOOLS = [
   },
 ];
 const NAMES = new Set(TOOLS.map((t) => t.name));
+// Stop reasons that mean the reply did not end normally: Anthropic's and OpenAI's.
+const CUT_OFF = new Set(["max_tokens", "refusal", "model_context_window_exceeded", "length", "content_filter"]);
 
 /** Why an input does not fit a tool's schema, or null. Only the shapes TOOLS uses. */
 export function badInput(schema, input) {
@@ -259,6 +261,9 @@ export async function runReview({ adapter, prompt, tools, maxTurns = 60, deadlin
       const res = await send(adapter, messages, TOOLS, sendOptions);
       out.usage.input += res.usage.input;
       out.usage.output += res.usage.output;
+      // A reply that was cut off, or refused, is not a finished review, and a tool call in it may be
+      // incomplete.
+      if (CUT_OFF.has(res.stop)) throw new ProviderError(`the reply was cut off (${res.stop})`);
       messages.push(res.assistant);
       if (!res.toolCalls.length) {
         out.status = "ran";
