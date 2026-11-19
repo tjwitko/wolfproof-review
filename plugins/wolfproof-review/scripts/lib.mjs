@@ -149,15 +149,16 @@ function oddNamesOf(fileSet) {
  * The repository files a message names, with a line when it gives one. Only names that are files in
  * the repository count, so "0.0.0.0:0" or "node:20-alpine" are never read as locations.
  *
- * Where two names overlap, the longer wins: in "x ace.py:20" the file is "x ace.py", not ace.py, when
- * both exist. A pull request picks its own file names, so one must not be able to move its findings
- * onto an unchanged file by naming itself after part of one. The project's root may lead a name
- * ("/work/p/app.py:3") and counts in its match; the message itself is never rewritten, so a folder
- * that repeats the root's path stays part of the name it is in.
+ * Every file whose name fits the text at a place is named, overlapping or not, and the sort takes the
+ * best-placed of them: "x ace.py:20" names both x ace.py and ace.py. A pull request picks its own file
+ * names, so it can add candidates (a file named "— evil.py", empty or renamed and so not in the
+ * change) but never take its own changed file out of them. A space at either end of a name is also the
+ * space between words, so "victim.py :20" names victim.py as well, with the line; text that fits only
+ * app.py ("(app.py:20)") names only app.py. Trailing punctuation may be the name's own or the
+ * sentence's: "app.py.. It hides" names app.py. and app.py.
  *
- * A space at either end of a name is also the space between words, so text that fits both "app.py "
- * and app.py names both, and the sort takes the better-placed one. Text that fits only app.py
- * ("(app.py:20)") names only app.py.
+ * The project's root may lead a name ("/work/p/app.py:3") and counts in its match. The message itself
+ * is never rewritten, so a folder that repeats the root's path stays part of the name it is in.
  */
 export function locationsIn(message, fileSet, root = "") {
   const text = String(message || "");
@@ -179,19 +180,23 @@ export function locationsIn(message, fileSet, root = "") {
       : text.startsWith("./", at - 2)
         ? at - 2
         : at;
-  // A plain name is one token. Its lead-in is part of the token unless the root has a blank in it.
+  // A plain name is one token. Its lead-in is part of the token unless the root has a blank in it. The
+  // token with each length of its trailing punctuation, all of it to none, is a candidate.
   const plain = (m, start) => {
-    let token = m[0].replace(/[.,;)]+$/, "");
-    let line = null;
-    const withLine = /^(.*?):(\d+)(?:-\d+)?$/.exec(token);
-    if (withLine) {
-      token = withLine[1];
-      line = Number(withLine[2]);
+    for (let k = m[0].length; k > 0; k--) {
+      let token = m[0].slice(0, k);
+      let line = null;
+      const withLine = /^(.*?):(\d+)(?:-\d+)?$/.exec(token);
+      if (withLine) {
+        token = withLine[1];
+        line = Number(withLine[2]);
+      }
+      token = token.replace(/:+$/, "");
+      if (prefix && token.startsWith(prefix)) token = token.slice(prefix.length);
+      token = token.replace(/^\.\//, "");
+      if (token && fileSet.has(token)) hits.push({ file: token, line, start, end: m.index + k, also: [] });
+      if (!/[.,;)]$/.test(m[0].slice(0, k))) break;
     }
-    token = token.replace(/:+$/, "");
-    if (prefix && token.startsWith(prefix)) token = token.slice(prefix.length);
-    token = token.replace(/^\.\//, "");
-    if (token && fileSet.has(token)) hits.push({ file: token, line, start, end: m.index + m[0].length, also: [] });
   };
   for (const m of text.matchAll(TOKEN)) plain(m, m.index);
   if (prefix && !PLAIN_NAME.test(prefix)) {
@@ -212,23 +217,20 @@ export function locationsIn(message, fileSet, root = "") {
       if (f) hits.push({ file: name, line: f.line, start, end: f.end, also: twins });
     }
   }
-  const chosen = [];
-  for (const h of hits.sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start)) {
-    if (!chosen.some((c) => h.start < c.end && c.start < h.end)) chosen.push(h);
-  }
-  chosen.sort((a, b) => a.start - b.start);
+  hits.sort((a, b) => a.start - b.start || a.end - b.end);
   const found = [];
-  chosen.forEach((h, i) => {
+  for (const h of hits) {
     let line = h.line;
     if (line === null) {
-      // "Dockerfile builds on ... — line 1 FROM": a line given in words, before the next file named.
-      const until = i + 1 < chosen.length ? chosen[i + 1].end : text.length;
+      // "Dockerfile builds on ... — line 1 FROM": a line given in words, before the next name that starts
+      // after this one ends (one that overlaps this one names the same place).
+      const until = Math.min(text.length, ...hits.filter((g) => g.start >= h.end).map((g) => g.start));
       const after = text.slice(h.end, Math.min(until, h.end + 120));
       const words = /\bline (\d+)\b/.exec(after);
       if (words) line = Number(words[1]);
     }
     for (const file of [h.file, ...h.also]) if (!found.some((f) => f.file === file && f.line === line)) found.push({ file, line });
-  });
+  }
   // A file named once with a line and once without: the line says more.
   return found.filter((f) => f.line !== null || !found.some((g) => g.file === f.file && g.line !== null));
 }
