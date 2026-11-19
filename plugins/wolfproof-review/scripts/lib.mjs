@@ -225,7 +225,7 @@ function escapeMd(s) {
  * @param {object} sorted sortFindings' output
  * @param {{ claude?: {status: string, posted?: number, offDiff?: Array<{path: string, line: number}>, note?: string} }} extra
  */
-export function renderSummary(sorted, { claude = { status: "not-run" } } = {}) {
+export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
   const m = sorted.meta || {};
   const head = m.head ? ` \`${String(m.head).slice(0, 7)}\`` : "";
   const out = [MARKER, "### wolfproof review", ""];
@@ -261,18 +261,21 @@ export function renderSummary(sorted, { claude = { status: "not-run" } } = {}) {
     out.push("", `<sub>${quiet} advisory note(s) elsewhere in the repository not listed${sorted.counts.ignored ? `; ${sorted.counts.ignored} finding(s) in ignored paths` : ""}.</sub>`);
   }
 
-  out.push("", "#### Claude's review", "");
-  const c = claude;
+  const c = review;
+  out.push("", c.model ? `#### Review by \`${escapeMd(c.model)}\`` : "#### The model's review", "");
   if (c.status === "ran") {
     out.push(`${c.posted ?? 0} inline comment(s) on changed lines.`);
-    if (c.offDiff?.length) {
-      out.push("", `⚠️ ${c.offDiff.length} comment(s) landed on lines this change did not modify: ${c.offDiff.map((o) => `\`${o.path}:${o.line}\``).join(", ")}. Please report this to wolfproof-review.`);
-    }
-  } else if (c.status === "no-key") out.push("Skipped: this repository has no `ANTHROPIC_API_KEY` secret. The scanner summary above still runs.");
-  else if (c.status === "fork") out.push("Skipped: a pull request from a fork gets no secrets, so Claude did not run.");
+  } else if (c.status === "no-key") {
+    out.push("Skipped: this repository has no `REVIEW_API_KEY` secret (or `ANTHROPIC_API_KEY`, for the Anthropic provider). The scanner summary above still runs.");
+  } else if (c.status === "fork") out.push("Skipped: a pull request from a fork gets no secrets, so the model did not run.");
   else if (c.status === "no-scan") out.push("Skipped: the scan job left nothing to review. See its log.");
-  else if (c.status === "failed") out.push(`Claude's step failed${c.note ? `: ${escapeMd(c.note)}` : ""}. See the review job's log.`);
-  else out.push("Not run.");
+  else if (c.status === "failed") {
+    out.push(`The review failed${c.note ? `: ${escapeMd(firstLine(c.note, 300))}` : ""}. See the review job's log.`);
+    if (c.posted) out.push("", `It posted ${c.posted} inline comment(s) before it stopped.`);
+  } else out.push("Not run.");
+  if (c.offDiff?.length) {
+    out.push("", `⚠️ ${c.offDiff.length} comment(s) landed on lines this change did not modify: ${c.offDiff.map((o) => `\`${o.path}:${o.line}\``).join(", ")}. Please report this to wolfproof-review.`);
+  }
   out.push("", `<sub>[wolfproof-review](https://github.com/tjwitko/wolfproof-review) ${m.reviewVersion || ""} · rules from wolfproof's checks.md</sub>`);
 
   let body = out.join("\n");
@@ -280,7 +283,7 @@ export function renderSummary(sorted, { claude = { status: "not-run" } } = {}) {
   return body;
 }
 
-// ---- After Claude: did any comment land off the diff? -------------------------------------------
+// ---- After the review: did any comment land off the diff? -------------------------------------------
 
 /** Review comments, as GitHub's API returns them, on lines the change did not add or modify. */
 export function offDiff(comments, changed) {
@@ -321,7 +324,8 @@ export function buildPrompt(agentMd, ctx) {
   lines.push(`- At most ${ctx.maxComments} comments.`);
   if (ctx.mode !== "local") {
     lines.push(
-      `- Post each comment with \`mcp__github_inline_comment__create_inline_comment\`: \`path\` relative to the repository root (without the \`${ctx.codeDir}/\` prefix), \`line\` the new-file line number, \`side\` "RIGHT", \`confirmed\` true.`,
+      `- Post each comment with the \`create_inline_comment\` tool: \`path\` relative to the repository root (without the \`${ctx.codeDir}/\` prefix), \`line\` the new-file line number, \`start_line\` only for a range. It accepts only lines the change added or modified.`,
+      `- Read files with \`read_file\`, search with \`grep\`, and list files with \`glob\`. Those four tools are all you have.`,
       `- Nothing else you write is shown to anyone. Finish with one line: how many comments you posted.`
     );
   }

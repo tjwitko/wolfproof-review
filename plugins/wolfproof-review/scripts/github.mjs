@@ -1,5 +1,5 @@
-// The few GitHub API calls the review job makes: earlier inline comments, this run's inline
-// comments, and the one summary comment, created once and then edited in place.
+// The few GitHub API calls the review job makes: earlier inline comments, posting this run's inline
+// comments, listing them afterwards, and the one summary comment, created once and then edited in place.
 
 import { MARKER } from "./lib.mjs";
 
@@ -54,4 +54,18 @@ export async function upsertSummary(body, env) {
   const mine = comments.find((x) => x.user?.login === c.bot && String(x.body || "").startsWith(MARKER));
   if (mine) return call(c, "PATCH", `/repos/${c.repo}/issues/comments/${mine.id}`, { body });
   return call(c, "POST", `/repos/${c.repo}/issues/${c.pr}/comments`, { body });
+}
+
+/** Post one inline review comment on the pull request's head commit, on the new side of the diff. */
+export async function postInlineComment({ path, line, start_line, body, commitId }, env) {
+  const c = config(env);
+  if (!commitId) throw new Error("no head commit to comment on");
+  return call(c, "POST", `/repos/${c.repo}/pulls/${c.pr}/comments`, {
+    body,
+    commit_id: commitId,
+    path,
+    line,
+    side: "RIGHT",
+    ...(start_line ? { start_line, start_side: "RIGHT" } : {}),
+  });
 }

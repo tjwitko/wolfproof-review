@@ -5,8 +5,11 @@
 //   review.mjs prompt   --agent F --sorted F --diff F --code-dir D --rulebook F --max-comments N
 //                       [--existing F] [--mode ci|local] (--out F | --github-output NAME)
 //   review.mjs existing --out F                          (GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER)
+//   review.mjs run      --provider P [--model M] [--base-url U] --prompt F --code-dir D --input-dir D
+//                       --rulebook-dir D --diff F --max-comments N --out F [--max-turns N] [--minutes N]
+//                                                    (REVIEW_API_KEY, and the same variables as existing)
 //   review.mjs check    --diff F --since ISO --out F     (the same variables)
-//   review.mjs summary  --sorted F [--claude STATUS] [--check F] [--note TEXT] [--post]
+//   review.mjs summary  --sorted F [--status STATUS] [--run F] [--check F] [--note TEXT] [--post]
 //   review.mjs local    [base] [--no-scan]           (wolfproof: node_modules/wolfproof, else WOLFPROOF_BIN)
 //
 // Exit 0, or 2 on a usage error. A GitHub call that fails is reported and, for `summary --post`,
@@ -20,7 +23,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, localDirName, STAMP, wolfproofCommand } from "./lib.mjs";
-import { botReviewComments, upsertSummary } from "./github.mjs";
+import { botReviewComments, postInlineComment, upsertSummary } from "./github.mjs";
+import { makeTools, runReview, logSafe } from "./agent.mjs";
+import { adapter } from "./providers.mjs";
 
 const PLUGIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LARGE_CHANGE = 1500;
@@ -103,6 +108,49 @@ async function existing(o) {
   console.log(`${list.length} earlier inline comment(s)`);
 }
 
+// The model's review: plain API calls to the chosen provider, with only agent.mjs's four tools. The
+// key is read here and goes nowhere but the provider's request headers.
+async function review(o) {
+  need(o, "provider", "prompt", "code-dir", "input-dir", "rulebook-dir", "diff", "max-comments", "out");
+  const meta = readJson(path.join(o["input-dir"], "meta.json")) || {};
+  let out;
+  try {
+    const a = adapter({
+      provider: o.provider,
+      apiKey: process.env.REVIEW_API_KEY,
+      model: typeof o.model === "string" ? o.model : undefined,
+      baseUrl: typeof o["base-url"] === "string" ? o["base-url"] : undefined,
+    });
+    const dirs = [o["code-dir"], o["input-dir"], o["rulebook-dir"]];
+    const tools = makeTools({
+      cwd: process.cwd(),
+      roots: dirs.map((d) => ({ name: d, dir: d })),
+      codeRoot: o["code-dir"],
+      changed: parseDiff(readText(o.diff)),
+      maxComments: Number(o["max-comments"]),
+      post: (c) => postInlineComment({ ...c, commitId: meta.head }),
+    });
+    out = await runReview({
+      adapter: a,
+      prompt: readText(o.prompt),
+      tools,
+      maxTurns: Number(o["max-turns"]) || 60,
+      deadline: Date.now() + (Number(o.minutes) || 20) * 60 * 1000,
+    });
+  } catch (err) {
+    out = { status: "failed", provider: o.provider, model: typeof o.model === "string" ? o.model : null, turns: 0, calls: [], usage: { input: 0, output: 0 }, posted: 0, error: logSafe(err.message) };
+  }
+  writeFileSync(o.out, JSON.stringify(out, null, 2));
+  console.log(`review: ${out.status} with ${out.provider} ${out.model || ""}, ${out.turns} turn(s), ${out.posted} comment(s), ${out.usage.input} input and ${out.usage.output} output tokens`);
+  if (out.rejected && (out.rejected.offDiff || out.rejected.overLimit || out.rejected.badPath)) {
+    console.log(`refused: ${out.rejected.offDiff} off the diff, ${out.rejected.overLimit} over the limit, ${out.rejected.badPath} outside the readable folders`);
+  }
+  if (out.error) {
+    console.log(`::warning::wolfproof-review: the review did not finish: ${out.error}`);
+    process.exitCode = 1;
+  }
+}
+
 async function check(o) {
   need(o, "diff", "since", "out");
   const since = Date.parse(o.since);
@@ -122,8 +170,16 @@ async function summary(o) {
   need(o, "sorted");
   const sorted = readJson(o.sorted) || { meta: {}, scan: { ran: false }, change: { files: 0, lines: 0 }, findings: [], counts: {} };
   const checked = o.check ? readJson(o.check) : null;
-  const claude = { status: typeof o.claude === "string" ? o.claude : "not-run", posted: checked?.posted, offDiff: checked?.offDiff, note: typeof o.note === "string" ? o.note : undefined };
-  const body = renderSummary(sorted, { claude });
+  const ran = o.run ? readJson(o.run) : null;
+  const status = ran?.status || (typeof o.status === "string" ? o.status : "not-run");
+  const shown = {
+    status,
+    model: ran?.model || undefined,
+    posted: checked?.posted ?? ran?.posted,
+    offDiff: checked?.offDiff,
+    note: ran?.error || (typeof o.note === "string" ? o.note : undefined),
+  };
+  const body = renderSummary(sorted, { review: shown });
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(/^<!--.*-->\n/, "") + "\n");
   else process.stdout.write(body + "\n");
   if (o.post) {
@@ -223,7 +279,7 @@ function local(o) {
 }
 
 const o = opts(process.argv.slice(2));
-const commands = { sort, prompt, existing, check, summary, local };
+const commands = { sort, prompt, existing, run: review, check, summary, local };
 const run = commands[o._[0]];
 if (!run) {
   console.error(`usage: review.mjs <${Object.keys(commands).join("|")}> ...`);
