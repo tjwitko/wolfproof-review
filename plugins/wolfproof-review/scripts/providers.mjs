@@ -9,6 +9,10 @@ const DEFAULTS = {
 };
 export const PROVIDER_NAMES = Object.keys(DEFAULTS);
 const MAX_TOKENS = 8192;
+// OpenAI's cap also counts a reasoning model's hidden reasoning, so it needs room for that as well as
+// the reply; a turn that runs out stops with "length", which fails the review. Billing is per token
+// used, not per token allowed.
+const OPENAI_MAX_TOKENS = 32768;
 
 export class ProviderError extends Error {
   constructor(message, status) {
@@ -79,7 +83,7 @@ function openai(apiKey, model, base) {
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: {
         model,
-        max_completion_tokens: MAX_TOKENS,
+        max_completion_tokens: OPENAI_MAX_TOKENS,
         messages,
         tools: tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.schema } })),
       },

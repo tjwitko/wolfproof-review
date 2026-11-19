@@ -47,7 +47,7 @@ test("openai: request shape, tool calls with JSON arguments, results as tool mes
   const req = a.request(a.initial("hi"), TOOLS);
   assert.equal(req.url, "https://api.openai.com/v1/chat/completions");
   assert.equal(req.headers.authorization, "Bearer sk-o");
-  assert.equal(req.body.max_completion_tokens, 8192);
+  assert.equal(req.body.max_completion_tokens, 32768);
   assert.deepEqual(req.body.tools[0], { type: "function", function: { name: TOOLS[0].name, description: TOOLS[0].description, parameters: TOOLS[0].schema } });
   const calls = [
     { id: "c1", type: "function", function: { name: "grep", arguments: '{"pattern":"execute"}' } },
