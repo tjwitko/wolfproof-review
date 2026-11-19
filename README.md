@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.11
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.0
     secrets:
       REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
@@ -61,7 +61,7 @@ That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, und
 With OpenAI, for example:
 
 ```yaml
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.11
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.0
     with:
       provider: openai
       model: gpt-5.1
@@ -79,9 +79,6 @@ caching, so each turn reads the turns before it from the cache.
 A workflow that passes `ANTHROPIC_API_KEY`, the secret's earlier name, keeps working with the
 `anthropic` provider, as long as `base-url` is empty. That key is never sent to a gateway; one
 behind `base-url` takes `REVIEW_API_KEY`.
-
-> **Until the next release:** the release pinned above predates these inputs. It reviews with
-> Claude only, through `claude-code-action`, and takes the key as `ANTHROPIC_API_KEY`.
 
 Pin the version, as above. Dependabot's `github-actions` updater proposes new releases.
 
