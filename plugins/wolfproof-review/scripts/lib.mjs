@@ -241,6 +241,9 @@ export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
     if (s.couldNotRun.length) out.push("", `> Not checked on this runner: ${escapeMd(s.couldNotRun.map((c) => firstLine(c, 160)).join("; "))}`);
   }
   out.push("", `The change: ${sorted.change.lines} line(s) added or modified in ${sorted.change.files} file(s).`);
+  if (m.diffMismatch) {
+    out.push("", "> ⚠️ The scan job's diff did not match the pull request's commits, so this review used the diff it computed itself. The pull request's code runs in the scan job and may have changed the scan's files.");
+  }
 
   const section = (group, title, open) => {
     const list = sorted.findings.filter((f) => f.group === group && (group !== "elsewhere" || f.severity === "blocking"));

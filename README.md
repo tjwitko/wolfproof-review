@@ -151,7 +151,8 @@ The workflow has two jobs.
   this job has no secrets and a read-only token. It hands its result and the diff to the next job.
 - **`review`** runs no code from the pull request.
   - The base branch is checked out at the root, and the pull request beside it, as files to read.
-  - A script sorts the findings against the diff.
+  - It computes the diff itself, from the pull request's commits, rather than trust the scan job,
+    which ran the pull request's code. A script sorts the findings against that diff.
   - The model reviews through plain API calls from the workflow's own script. It has four tools,
     which that script implements: read a file, search, list files, and comment on a changed line.
     No shell, no edits, no network. Text in a pull request that tries to instruct the model has
