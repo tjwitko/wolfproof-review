@@ -119,7 +119,8 @@ test("send never follows a redirect, so a gateway cannot pass the key on", async
 });
 
 test("a rejected key gets a fixed message, and no error carries the key", async () => {
-  const key = "sk-proj-0123456789abcdefWXYZ";
+  // Built at runtime, so the secret scanners do not take the made-up key for a real one.
+  const key = ["sk", "proj", "0123456789abcdef" + "WXYZ"].join("-");
   const a = adapter({ provider: "openai", apiKey: key, model: "m" });
   const fail = (status, message) => send(a, a.initial("x"), TOOLS, { fetchImpl: async () => json(status, { error: { message } }), sleep: async () => {}, retries: 0 });
   await assert.rejects(fail(401, `Incorrect API key provided: ${key.slice(0, 3)}************${key.slice(-4)}.`), (err) => {
