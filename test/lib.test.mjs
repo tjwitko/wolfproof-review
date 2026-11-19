@@ -104,15 +104,15 @@ test("ignored paths drop their findings and leave the change", () => {
 test("no result: nothing sorted, and the summary says the scan did not run", () => {
   const s = sortFindings({ result: null, diff, files, meta: { head: "abcdef123", scanNote: "The scan job failed." } });
   assert.equal(s.scan.ran, false);
-  const body = renderSummary(s, { claude: { status: "no-key" } });
+  const body = renderSummary(s, { review: { status: "no-key" } });
   assert.match(body, /wolfproof did not produce a result for `abcdef1`/);
   assert.match(body, /The scan job failed\./);
-  assert.match(body, /no `ANTHROPIC_API_KEY` secret/);
+  assert.match(body, /no `REVIEW_API_KEY` secret \(or `ANTHROPIC_API_KEY`, for the Anthropic provider\)/);
 });
 
 test("the summary leads with changed lines and folds what was already there", () => {
   const s = sortFindings({ result, diff, files, root: "/work/legacy", meta: { head: "1234567890", wolfproof: "v1.15.0", reviewVersion: "v0.1.0" } });
-  const body = renderSummary(s, { claude: { status: "ran", posted: 2, offDiff: [] } });
+  const body = renderSummary(s, { review: { status: "ran", model: "claude-sonnet-5-5", posted: 2, offDiff: [] } });
   assert.ok(body.startsWith(MARKER));
   assert.match(body, /wolfproof v1\.15\.0 scanned `1234567`: \*\*blocked\*\*/);
   const changed = body.indexOf("#### On lines this change added or modified");
@@ -120,7 +120,17 @@ test("the summary leads with changed lines and folds what was already there", ()
   assert.ok(changed > 0 && folded > changed);
   assert.match(body.slice(changed, folded), /`app\/views\.py:22`/);
   assert.match(body.slice(folded), /command injection/);
-  assert.match(body, /2 inline comment\(s\) on changed lines/);
+  assert.match(body, /#### Review by `claude-sonnet-5-5`\n\n2 inline comment\(s\) on changed lines/);
+});
+
+test("a failed review shows the provider's error, what it posted, and comments off the diff", () => {
+  const s = sortFindings({ result, diff, files });
+  const body = renderSummary(s, { review: { status: "failed", model: "gpt-5.1", posted: 1, note: "anthropic answered 400: Your credit balance is too low", offDiff: [{ path: "a.py", line: 3 }] } });
+  assert.match(body, /#### Review by `gpt-5\.1`/);
+  assert.match(body, /The review failed: anthropic answered 400: Your credit balance is too low\./);
+  assert.match(body, /It posted 1 inline comment\(s\) before it stopped/);
+  assert.match(body, /1 comment\(s\) landed on lines this change did not modify: `a\.py:3`/);
+  assert.doesNotMatch(body, /Claude/);
 });
 
 test("the summary cannot be closed or used to ping anyone by the text it quotes", () => {
@@ -153,6 +163,9 @@ test("the prompt is the agent's instructions with this run after them", () => {
   assert.match(p, /## This run/);
   assert.match(p, /without the `pr-head\/` prefix/);
   assert.match(p, /At most 15 comments/);
+  assert.match(p, /the `create_inline_comment` tool/);
+  assert.match(p, /`read_file`.*`grep`.*`glob`/);
+  assert.ok(!/mcp__/.test(p));
   assert.ok(!/large/.test(p.split("## This run")[1]));
   const local = buildPrompt(agent, { mode: "local", codeDir: "/repo", diffPath: "d", sortedPath: "s", rulebookPath: "r", maxComments: 15, changedLines: 4000, largeChange: 1500 });
   assert.match(local, /local — print the review/);

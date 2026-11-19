@@ -1,7 +1,7 @@
 name: wolfproof review
 
 # A comment-only review of a pull request: wolfproof scans the repository, a script sorts its findings
-# by whether the pull request touched them, and Claude comments on the lines the pull request changed.
+# by whether the pull request touched them, and a model comments on the lines the pull request changed.
 # It never fails the build. Call it from a workflow of your own (see the README):
 #
 #   on:
@@ -14,19 +14,27 @@ name: wolfproof review
 #     wolfproof-review:
 #       uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.11
 #       secrets:
-#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#         REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 #
 # Two jobs, so the job that runs the project's code never holds the API key. `scan` runs wolfproof,
 # which runs the project's tests and builds, with no secrets and a read-only token. `review` runs no
-# project code: it reads the pull request as files, and Claude may only read, search and comment.
+# project code: it reads the pull request as files, and the model may only read, search and comment.
 
 on:
   workflow_call:
     inputs:
-      model:
-        description: The Claude model that reviews.
+      provider:
+        description: The model API, anthropic or openai (any OpenAI-compatible chat completions endpoint).
         type: string
-        default: claude-sonnet-5-5
+        default: anthropic
+      model:
+        description: The model that reviews. Empty means claude-sonnet-5-5 for anthropic; openai needs one.
+        type: string
+        default: ""
+      base-url:
+        description: The API's base URL, https only, for a gateway or another OpenAI-compatible service. Empty means the provider's own.
+        type: string
+        default: ""
       max-comments:
         description: The most inline comments one run may post, 1 to 50.
         type: number
@@ -40,8 +48,11 @@ on:
         type: string
         default: ""
     secrets:
+      REVIEW_API_KEY:
+        description: Your own API key for the provider. Without one, only the scanner summary is posted.
+        required: false
       ANTHROPIC_API_KEY:
-        description: Your own Anthropic API key. Without it, only the scanner summary is posted.
+        description: The older name, still read when the provider is anthropic and REVIEW_API_KEY is not set.
         required: false
 
 env:
@@ -91,6 +102,8 @@ jobs:
           TOOLING: ${{ steps.tooling.outcome }}
         run: |
           out="$RUNNER_TEMP/wolfproof-review-input"
+          # Earlier steps ran the pull request's code, which could have left files here.
+          rm -rf "$out"
           mkdir -p "$out"
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           git -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$out/diff.patch"
@@ -135,8 +148,8 @@ jobs:
       PLUGIN: .wolfproof-review/plugins/wolfproof-review
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      # claude-code-action's advice for pull requests: the base branch at the root, the pull request
-      # in a subdirectory Claude is given to read. Nothing from the pull request is executed here.
+      # The base branch at the root, the pull request in a subdirectory the model is given to read.
+      # Nothing from the pull request is executed here.
       - name: Check out the base branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -158,8 +171,8 @@ jobs:
           path: .wolfproof-review
           persist-credentials: false
 
-      # The pull request's own Claude configuration is not loaded from a subdirectory, but nothing
-      # in it is needed either.
+      # The model reads files only, through review.mjs's tools, so none of this would be loaded; it
+      # is removed so that what the model can read is the pull request's own files.
       - name: Remove configuration the pull request carries
         run: rm -rf pr-head/.git pr-head/.claude pr-head/.claude.json pr-head/.mcp.json
 
@@ -169,6 +182,14 @@ jobs:
         with:
           name: wolfproof-review-input
           path: .wolfproof-review-input
+
+      # The scan job ran the pull request's code, so its artifact may carry more than the scan wrote.
+      # Keep the four files the scan hands over, as plain files; this job writes everything else.
+      - name: Keep only the scan's own files
+        run: |
+          mkdir -p "$IN"
+          find "$IN" -mindepth 1 -maxdepth 1 \( ! -type f -o ! \( -name diff.patch -o -name files.txt -o -name result.json -o -name meta.json \) \) -exec rm -rf {} +
+          ls -A "$IN"
 
       - name: Sort the findings by what the pull request touched
         env:
@@ -184,16 +205,27 @@ jobs:
           node "$CLI" sort "${args[@]}" --diff "$IN/diff.patch" --files "$IN/files.txt" \
             --root "$(jq -r '.root // ""' "$IN/meta.json")" --ignore "$IGNORE" --meta "$IN/meta.json" --out "$IN/sorted.json"
 
-      - name: Decide whether Claude reviews
+      - name: Decide whether the model reviews
         id: plan
         env:
-          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_KEY: ${{ secrets.REVIEW_API_KEY != '' || (inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY != '') }}
           FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          PROVIDER: ${{ inputs.provider }}
           MODEL: ${{ inputs.model }}
+          BASE_URL: ${{ inputs.base-url }}
           MAX: ${{ inputs.max-comments }}
         run: |
-          if ! [[ "$MODEL" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
-            echo "::error::model is a model ID such as claude-sonnet-5-5, not \"$MODEL\""; exit 1
+          if [ "$PROVIDER" != anthropic ] && [ "$PROVIDER" != openai ]; then
+            echo "::error::provider is anthropic or openai, not \"$PROVIDER\""; exit 1
+          fi
+          if [ -n "$MODEL" ] && ! [[ "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]; then
+            echo "::error::model is a model ID such as claude-sonnet-5-5 or gpt-5.1, not \"$MODEL\""; exit 1
+          fi
+          if [ -z "$MODEL" ] && [ "$PROVIDER" != anthropic ]; then
+            echo "::error::the $PROVIDER provider needs a model"; exit 1
+          fi
+          if [ -n "$BASE_URL" ] && ! [[ "$BASE_URL" =~ ^https://[^[:space:]]+$ ]]; then
+            echo "::error::base-url is an https:// URL"; exit 1
           fi
           if ! [[ "$MAX" =~ ^[0-9]+$ ]] || [ "$MAX" -lt 1 ] || [ "$MAX" -gt 50 ]; then
             echo "::error::max-comments is a number from 1 to 50, not \"$MAX\""; exit 1
@@ -205,7 +237,7 @@ jobs:
           fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "since=$(date -u -d '-10 seconds' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "Claude: $status"
+          echo "Review: $status"
 
       - name: List earlier review comments
         if: steps.plan.outputs.status == 'run'
@@ -221,31 +253,32 @@ jobs:
         run: |
           node "$CLI" prompt --agent "$PLUGIN/agents/wolfproof-reviewer.md" --sorted "$IN/sorted.json" \
             --diff "$IN/diff.patch" --code-dir pr-head --rulebook "$PLUGIN/rulebook/checks.md" \
-            --existing "$IN/existing.json" --max-comments "$MAX" --github-output text
+            --existing "$IN/existing.json" --max-comments "$MAX" --out "$IN/prompt.md"
 
-      # Claude may read, search and comment inline. No shell, no edits, no network: a pull request
-      # that carries instructions for it has nothing to run them with. --permission-mode default keeps
-      # --allowedTools a strict list: since v1.0.273 the action starts prompt runs in auto mode, where
-      # a safety review can allow a call no rule covers. It comes last in claude_args, so it wins.
-      - name: Review with Claude
-        id: claude
+      # The model's review, as plain API calls from review.mjs (agent.mjs and providers.mjs). Its only
+      # tools are read_file, grep and glob, inside pr-head, the scan's files and the rulebook, and
+      # create_inline_comment, which refuses lines the pull request did not add or modify. No shell, no
+      # edits, no network: a pull request that carries instructions for it has nothing to run them
+      # with. The key is in this step's environment and no other.
+      - name: Review
+        id: review
         if: steps.plan.outputs.status == 'run'
         continue-on-error: true
-        uses: anthropics/claude-code-action@f3b070c88125d33dbae5653df5f143101d4ea9dc # v1.0.276
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ github.token }}
-          classify_inline_comments: "false"
-          prompt: ${{ steps.prompt.outputs.text }}
-          claude_args: >-
-            --model ${{ inputs.model }}
-            --max-turns 60
-            --add-dir pr-head .wolfproof-review-input .wolfproof-review/plugins/wolfproof-review/rulebook
-            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"
-            --disallowedTools "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task"
-            --permission-mode default
+        timeout-minutes: 25
+        env:
+          REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || (inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY) || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+          BASE_URL: ${{ inputs.base-url }}
+          MAX: ${{ inputs.max-comments }}
+        run: |
+          node "$CLI" run --provider "$PROVIDER" --model "$MODEL" --base-url "$BASE_URL" --prompt "$IN/prompt.md" \
+            --code-dir pr-head --input-dir "$IN" --rulebook-dir "$PLUGIN/rulebook" --diff "$IN/diff.patch" \
+            --max-comments "$MAX" --head "$HEAD_SHA" --out "$IN/run.json"
 
-      - name: Check where Claude commented
+      - name: Check where the comments landed
         if: ${{ !cancelled() && steps.plan.outputs.status == 'run' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -257,14 +290,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           STATUS: ${{ steps.plan.outputs.status }}
-          CLAUDE: ${{ steps.claude.outcome }}
         run: |
+          # run.json, when the review wrote one, says how it went; without it a review that should have
+          # run failed.
           case "$STATUS" in
-            run) if [ "$CLAUDE" = success ]; then claude=ran; else claude=failed; fi ;;
-            "") claude=no-scan ;;
-            *) claude="$STATUS" ;;
+            run) status=failed ;;
+            "") status=no-scan ;;
+            *) status="$STATUS" ;;
           esac
           args=()
-          [ -f "$IN/check.json" ] && args+=(--check "$IN/check.json")
+          if [ "$STATUS" = run ]; then
+            [ -f "$IN/run.json" ] && args+=(--run "$IN/run.json")
+            [ -f "$IN/check.json" ] && args+=(--check "$IN/check.json")
+          fi
           [ -f "$IN/sorted.json" ] && args+=(--sorted "$IN/sorted.json") || args+=(--sorted /dev/null)
-          node "$CLI" summary "${args[@]}" --claude "$claude" --post
+          node "$CLI" summary "${args[@]}" --status "$status" --post

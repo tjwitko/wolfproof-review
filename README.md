@@ -1,9 +1,9 @@
 # wolfproof-review
 
 A pull-request reviewer for legacy repositories. [wolfproof](https://github.com/tjwitko/wolfproof)'s
-scanners supply the evidence, wolfproof's rules are the guideline, and Claude comments only on the
-lines the pull request changed. It never fails the build, so a repository with years of existing
-findings can turn it on today.
+scanners supply the evidence, wolfproof's rules are the guideline, and a model comments only on the
+lines the pull request changed: Claude, or any model behind an OpenAI-compatible API. It never fails
+the build, so a repository with years of existing findings can turn it on today.
 
 wolfproof itself is a gate: it judges the whole repository and blocks. On old code that means it
 blocks on day one, for code nobody touched. This reviewer runs the same scanners and asks a narrower
@@ -15,21 +15,21 @@ question: what did this change add or touch?
   - findings on lines the pull request added or modified;
   - findings in files it touched;
   - a folded list of blocking findings already in the repository, untouched by the change.
-- **Inline comments from Claude**, on changed lines only, up to 15 per run. Each one names the
+- **Inline comments from the model**, on changed lines only, up to 15 per run. Each one names the
   wolfproof rule it falls under and suggests a fix.
-  - For each scanner finding on a changed line, Claude reads the code. It says whether the finding
+  - For each scanner finding on a changed line, the model reads the code. It says whether the finding
     holds or is probably a false positive.
   - It also flags what wolfproof's rules describe but no scanner reported, marked "Not from a
     scanner".
 
-Claude can add to the scanners' findings, but it cannot remove them. The summary is written by a
-script, so a pull request that talks Claude out of a finding still shows that finding.
+The model can add to the scanners' findings, but it cannot remove them. The summary is written by a
+script, so a pull request that talks the model out of a finding still shows that finding.
 
 ## Add it to a repository
 
-1. Add your Anthropic API key as a repository secret named `ANTHROPIC_API_KEY` (Settings → Secrets
+1. Add your provider's API key as a repository secret named `REVIEW_API_KEY` (Settings → Secrets
    and variables → Actions). Each team uses its own key and pays for its own reviews. Without a key,
-   the scanner summary is still posted, and Claude's review is skipped.
+   the scanner summary is still posted, and the model's review is skipped.
 2. Add `.github/workflows/wolfproof-review.yml`:
 
 ```yaml
@@ -44,16 +44,38 @@ jobs:
   wolfproof-review:
     uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.11
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
 
-That is all. Optional inputs, under `with:`:
+That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, under `with:`:
 
 | input | default | |
 |---|---|---|
-| `model` | `claude-sonnet-5-5` | The Claude model that reviews |
+| `provider` | `anthropic` | `anthropic`, or `openai` for any OpenAI-compatible chat completions API |
+| `model` | `claude-sonnet-5-5` for `anthropic` | The model that reviews. Required for `openai` |
+| `base-url` | the provider's own | An `https://` base URL: a gateway, Azure OpenAI, OpenRouter, or a self-hosted server |
 | `max-comments` | `15` | The most inline comments one run posts, 1 to 50 |
 | `paths-ignore` | *(none)* | Globs, one per line or comma-separated, to leave out, such as generated or vendored code |
+
+With OpenAI, for example:
+
+```yaml
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.2.11
+    with:
+      provider: openai
+      model: gpt-5.1
+    secrets:
+      REVIEW_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+The reviewer's requests are ordinary API calls, billed as API usage by your provider. Whatever the
+provider, the diff and the files the model reads are sent to it.
+
+A workflow that passes `ANTHROPIC_API_KEY`, the secret's earlier name, keeps working with the
+`anthropic` provider.
+
+> **Until the next release:** the release pinned above predates these inputs. It reviews with
+> Claude only, through `claude-code-action`, and takes the key as `ANTHROPIC_API_KEY`.
 
 Pin the version, as above. Dependabot's `github-actions` updater proposes new releases.
 
@@ -129,17 +151,20 @@ The workflow has two jobs.
   this job has no secrets and a read-only token. It hands its result and the diff to the next job.
 - **`review`** runs no code from the pull request.
   - The base branch is checked out at the root, and the pull request beside it, as files to read.
-    This follows `claude-code-action`'s guidance for pull requests.
   - A script sorts the findings against the diff.
-  - Claude reviews, with read, search and the inline-comment tool only: no shell, no edits, no
-    network. Text in a pull request that tries to instruct Claude has nothing to run.
+  - The model reviews through plain API calls from the workflow's own script. It has four tools,
+    which that script implements: read a file, search, list files, and comment on a changed line.
+    No shell, no edits, no network. Text in a pull request that tries to instruct the model has
+    nothing to run.
+  - The tools read only the pull request's files, the scan's results and the rulebook, even through
+    a symlink. The comment tool refuses lines the pull request did not change.
+  - Only the review step holds the key.
   - A script checks that every comment landed on a changed line, and posts the summary.
 
 Pull requests from forks get no secrets, so they get the scanner summary in the job log only. The
 workflow runs on `pull_request` only, never `pull_request_target`.
 
-Everything is pinned: wolfproof by release tag, and `claude-code-action` and every other action by
-commit SHA.
+Everything is pinned: wolfproof by release tag, and every action by commit SHA.
 
 ## Limits
 
@@ -158,7 +183,8 @@ commit SHA.
 node --test 'test/*.test.mjs'
 ```
 
-- The scripts are plain Node with no dependencies, in `plugins/wolfproof-review/scripts/`.
+- The scripts are plain Node with no dependencies, in `plugins/wolfproof-review/scripts/`. The
+  review loop and its tools are `agent.mjs`; the provider adapters are `providers.mjs`.
 - The reviewer's instructions are in `plugins/wolfproof-review/agents/wolfproof-reviewer.md`, the only
   copy. The workflow and the local command both read it.
 - `plugins/wolfproof-review/rulebook/checks.md` is wolfproof's rulebook at the pinned tag. CI fails if

@@ -73,13 +73,32 @@ test("the plugin's hooks run scripts that exist, on the commands that open a pul
   }
 });
 
-test("the agent's tools are read-only", () => {
+test("the reviewer's tools are read-only, and only the review step holds the key", async () => {
+  // Locally, Claude Code runs the agent with these tools; in the workflow, agent.mjs's four.
   const agent = read("plugins/wolfproof-review/agents/wolfproof-reviewer.md");
   assert.match(agent, /^tools: Read, Grep, Glob$/m);
-  assert.match(workflow, /--allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment"/);
-  assert.match(workflow, /--disallowedTools "Bash,/);
-  // claude-code-action starts prompt runs in auto mode, which makes --allowedTools advisory. Our
-  // claude_args come after the action's own --permission-mode auto, so one "default" here wins.
-  const args = /claude_args: >-\n([\s\S]*?)\n\n/.exec(workflow)?.[1] || "";
-  assert.deepEqual([...args.matchAll(/--permission-mode (\S+)/g)].map((m) => m[1]), ["default"]);
+  const { TOOLS } = await import("../plugins/wolfproof-review/scripts/agent.mjs");
+  assert.deepEqual(TOOLS.map((t) => t.name), ["read_file", "grep", "glob", "create_inline_comment"]);
+  for (const file of [".github/workflows/review.yml", ".github/workflows/ci.yml", ".github/workflows/self-review.yml"]) {
+    assert.doesNotMatch(read(file), /claude-code-action/, file);
+  }
+  // Each step of the review job, by name: only "Review" has the key in its environment.
+  const [jobHead, ...steps] = workflow.slice(workflow.indexOf("  review:\n")).split(/\n      - name: /);
+  assert.doesNotMatch(jobHead, /secrets\./, "the review job's own env holds no secret");
+  // The decide step only learns whether a key exists (HAS_KEY, true or false).
+  const withKey = steps.filter((st) => st.split("\n").some((l) => /secrets\.(REVIEW|ANTHROPIC)_API_KEY/.test(l) && !/^\s*HAS_KEY:/.test(l)));
+  assert.deepEqual(withKey.map((st) => st.split("\n")[0]), ["Review"]);
+  assert.match(workflow, /node "\$CLI" run --provider/);
+});
+
+test("the review job keeps only the scan's own files, and reads its own results only when it ran", () => {
+  const review = workflow.slice(workflow.indexOf("  review:\n"));
+  const download = review.indexOf("- name: Download the scan");
+  const trim = review.indexOf("- name: Keep only the scan's own files");
+  const sort = review.indexOf("- name: Sort the findings");
+  assert.ok(download > 0 && trim > download && sort > trim, "the trim runs after the download and before anything reads the files");
+  assert.match(review, /find "\$IN" -mindepth 1 -maxdepth 1 \\\( ! -type f -o ! \\\( -name diff\.patch -o -name files\.txt -o -name result\.json -o -name meta\.json \\\) \\\) -exec rm -rf \{\} \+/);
+  assert.match(workflow, /# Earlier steps ran the pull request's code[^\n]*\n {10}rm -rf "\$out"\n {10}mkdir -p "\$out"/);
+  assert.match(review, /if \[ "\$STATUS" = run \]; then\n\s+\[ -f "\$IN\/run\.json" \]/);
+  assert.match(review, /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}[\s\S]*--head "\$HEAD_SHA"/);
 });
