@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.0
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.1
     secrets:
       REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
@@ -61,7 +61,7 @@ That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, und
 With OpenAI, for example:
 
 ```yaml
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.0
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.1
     with:
       provider: openai
       model: gpt-5.1
