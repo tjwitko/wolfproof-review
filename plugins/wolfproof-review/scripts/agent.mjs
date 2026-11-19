@@ -138,8 +138,13 @@ export function makeTools({ cwd, roots, codeRoot, changed, maxComments, post }) 
       let out = "";
       let n = first;
       for (; n < first + count && n <= all.length; n++) {
-        const line = `${n}\t${all[n - 1]}\n`;
-        if (out.length + line.length > READ_BYTES) break;
+        let line = `${n}\t${all[n - 1]}\n`;
+        if (out.length + line.length > READ_BYTES) {
+          if (out) break;
+          // One line over the whole budget (a minified bundle, say): give its start, so the next
+          // offset moves on rather than asking for the same line again.
+          line = `${line.slice(0, READ_BYTES)}\n(line ${n} cut at ${READ_BYTES / 1024} KB)\n`;
+        }
         out += line;
       }
       if (n <= all.length) out += `(${all.length - n + 1} more line(s); read on with offset ${n})\n`;

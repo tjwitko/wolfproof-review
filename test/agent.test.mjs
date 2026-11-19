@@ -399,3 +399,18 @@ test("glob keeps a model's pattern from backtracking for ever", async () => {
     w.done();
   }
 });
+
+test("read_file moves past a single line longer than its budget", async () => {
+  const w = workspace();
+  try {
+    writeFileSync(path.join(w.work, "pr-head", "app", "bundle.min.js"), `${"x".repeat(300 * 1024)}\nsecond\n`);
+    const { t } = tools(w.work);
+    const r = await t.run("read_file", { path: "pr-head/app/bundle.min.js" });
+    assert.equal(r.isError, false);
+    assert.match(r.content, /^1\txxx/);
+    assert.match(r.content, /\(line 1 cut at 256 KB\)\n\(2 more line\(s\); read on with offset 2\)/);
+    assert.match((await t.run("read_file", { path: "pr-head/app/bundle.min.js", offset: 2 })).content, /^2\tsecond/);
+  } finally {
+    w.done();
+  }
+});
