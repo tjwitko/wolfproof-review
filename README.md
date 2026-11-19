@@ -55,6 +55,7 @@ That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, und
 | `model` | `claude-sonnet-5-5` for `anthropic` | The model that reviews. Required for `openai` |
 | `base-url` | the provider's own | An `https://` base URL: a gateway, Azure OpenAI, OpenRouter, or a self-hosted server |
 | `max-comments` | `15` | The most inline comments one run posts, 1 to 50 |
+| `max-input-tokens` | `1000000` | The most prompt tokens one review uses across its turns, cached or not. A review that would go past it stops, and the summary says so |
 | `paths-ignore` | *(none)* | Globs, one per line or comma-separated, to leave out, such as generated or vendored code |
 
 With OpenAI, for example:
@@ -68,11 +69,16 @@ With OpenAI, for example:
       REVIEW_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
+The `openai` provider has not yet been run against a live endpoint. Its tests run against recorded
+request and response shapes only.
+
 The reviewer's requests are ordinary API calls, billed as API usage by your provider. Whatever the
-provider, the diff and the files the model reads are sent to it.
+provider, the diff and the files the model reads are sent to it. Requests to Anthropic use prompt
+caching, so each turn reads the turns before it from the cache.
 
 A workflow that passes `ANTHROPIC_API_KEY`, the secret's earlier name, keeps working with the
-`anthropic` provider.
+`anthropic` provider, as long as `base-url` is empty. That key is never sent to a gateway; one
+behind `base-url` takes `REVIEW_API_KEY`.
 
 > **Until the next release:** the release pinned above predates these inputs. It reviews with
 > Claude only, through `claude-code-action`, and takes the key as `ANTHROPIC_API_KEY`.
@@ -160,7 +166,8 @@ The workflow has two jobs.
   - The tools read only the pull request's files, the scan's results and the rulebook, even through
     a symlink. The comment tool refuses lines the pull request did not change.
   - Only the review step holds the key.
-  - A script checks that every comment landed on a changed line, and posts the summary.
+  - A script checks every comment against GitHub's own diff of the pull request, not the one the
+    comment tool used, and posts the summary.
 
 Pull requests from forks get no secrets, so they get the scanner summary in the job log only. The
 workflow runs on `pull_request` only, never `pull_request_target`.

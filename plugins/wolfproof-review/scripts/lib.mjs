@@ -11,12 +11,34 @@ const SUMMARY_LIMIT = 60000; // GitHub rejects a comment body over 65,536 charac
 /**
  * The lines a unified diff adds or changes, per file, on the new side. Run git diff with -U0 so every
  * hunk is exactly the changed lines.
+ *
+ * Each hunk header's counts say how many body lines follow, and exactly that many are consumed, so a
+ * "+++ " or "diff --git " line counts as a header only between hunks. Inside a hunk it is the
+ * content of a changed line: an added line reading "++ b/other.py" is "+++ b/other.py" in the diff.
  * @returns {Map<string, {ranges: Array<[number, number]>, deleted: boolean}>}
  */
 export function parseDiff(text) {
   const files = new Map();
   let current = null;
+  let oldLeft = 0;
+  let newLeft = 0;
   for (const line of String(text || "").split("\n")) {
+    if (oldLeft > 0 || newLeft > 0) {
+      const c = line[0];
+      let body = true;
+      if (c === "+" && newLeft > 0) newLeft--;
+      else if (c === "-" && oldLeft > 0) oldLeft--;
+      else if (c === " " && oldLeft > 0 && newLeft > 0) oldLeft--, newLeft--;
+      else if (c !== "\\") {
+        // A body shorter than its header promised. git never writes one; credit nothing more to
+        // this file, and read the line as a header.
+        current = null;
+        oldLeft = newLeft = 0;
+        body = false;
+      }
+      // ("\ No newline at end of file" belongs to the line before it.)
+      if (body) continue;
+    }
     if (line.startsWith("diff --git ")) {
       current = null;
       continue;
@@ -32,11 +54,12 @@ export function parseDiff(text) {
       files.set(file, current);
       continue;
     }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (hunk && current) {
-      const start = Number(hunk[1]);
-      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      if (count > 0) current.ranges.push([start, start + count - 1]);
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]);
+      const start = Number(hunk[2]);
+      newLeft = hunk[3] === undefined ? 1 : Number(hunk[3]);
+      if (current && newLeft > 0) current.ranges.push([start, start + newLeft - 1]);
     }
   }
   return files;
@@ -223,7 +246,7 @@ function escapeMd(s) {
 /**
  * The one summary comment, rewritten on each push.
  * @param {object} sorted sortFindings' output
- * @param {{ claude?: {status: string, posted?: number, offDiff?: Array<{path: string, line: number}>, note?: string} }} extra
+ * @param {{ review?: {status: string, model?: string, posted?: number, offDiff?: Array<{path: string, line: number}>, note?: string, stopped?: string, maxInputTokens?: number} }} extra
  */
 export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
   const m = sorted.meta || {};
@@ -269,10 +292,16 @@ export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
   if (c.status === "ran") {
     out.push(`${c.posted ?? 0} inline comment(s) on changed lines.`);
   } else if (c.status === "no-key") {
-    out.push("Skipped: this repository has no `REVIEW_API_KEY` secret (or `ANTHROPIC_API_KEY`, for the Anthropic provider). The scanner summary above still runs.");
+    out.push("Skipped: this repository has no `REVIEW_API_KEY` secret (or `ANTHROPIC_API_KEY`, for the Anthropic provider with no `base-url`). The scanner summary above still runs.");
   } else if (c.status === "fork") out.push("Skipped: a pull request from a fork gets no secrets, so the model did not run.");
   else if (c.status === "no-scan") out.push("Skipped: the scan job left nothing to review. See its log.");
-  else if (c.status === "failed") {
+  else if (c.status === "failed" && c.stopped === "input-tokens") {
+    out.push(
+      `The review stopped at its input-token budget${c.maxInputTokens ? ` of ${c.maxInputTokens} tokens` : ""}, before it finished. ` +
+        "The workflow's `max-input-tokens` input sets the budget. See the review job's log."
+    );
+    if (c.posted) out.push("", `It posted ${c.posted} inline comment(s) before it stopped.`);
+  } else if (c.status === "failed") {
     out.push(`The review failed${c.note ? `: ${escapeMd(firstLine(c.note, 300))}` : ""}. See the review job's log.`);
     if (c.posted) out.push("", `It posted ${c.posted} inline comment(s) before it stopped.`);
   } else out.push("Not run.");
@@ -299,6 +328,54 @@ export function offDiff(comments, changed) {
       return false;
     })
     .map((c) => ({ path: c.path, line: c.line ?? c.original_line ?? null }));
+}
+
+/**
+ * The lines each file gained, from GitHub's own patches (pulls/{pr}/files), for checking the comments
+ * against the diff GitHub shows rather than the one this job computed. A patch has context lines, so
+ * only its "+" lines count. A file GitHub sent no patch for is listed in `unknown`: its lines cannot be
+ * checked.
+ * @param {Array<{filename: string, status?: string, patch?: string}>} files
+ * @returns {{changed: Map<string, {ranges: Array<[number, number]>}>, unknown: Set<string>}}
+ */
+export function changedFromPatches(files) {
+  const changed = new Map();
+  const unknown = new Set();
+  for (const f of files || []) {
+    if (!f?.filename) continue;
+    if (typeof f.patch !== "string") {
+      // A rename with no changes has no patch and no lines; anything else without one is unknown.
+      if (f.changes === 0) changed.set(f.filename, { ranges: [] });
+      else if (f.status !== "removed") unknown.add(f.filename);
+      continue;
+    }
+    const ranges = [];
+    let line = 0;
+    let inHunk = false;
+    for (const l of f.patch.split("\n")) {
+      const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+      if (h) {
+        line = Number(h[1]);
+        inHunk = true;
+      } else if (!inHunk || l.startsWith("-") || l.startsWith("\\")) {
+        continue;
+      } else if (l.startsWith("+")) {
+        const last = ranges.at(-1);
+        if (last && last[1] === line - 1) last[1] = line;
+        else ranges.push([line, line]);
+        line++;
+      } else line++; // a context line
+    }
+    changed.set(f.filename, { ranges });
+  }
+  return { changed, unknown };
+}
+
+/** Files whose changed lines differ between two parses: this job's diff and GitHub's patches. */
+export function diffDisagreement(ours, github, unknown = new Set()) {
+  const key = (m, f) => JSON.stringify(m.get(f)?.ranges || []);
+  const names = new Set([...ours.keys(), ...github.keys()]);
+  return [...names].filter((f) => !unknown.has(f) && key(ours, f) !== key(github, f)).sort();
 }
 
 // ---- The prompt ---------------------------------------------------------------------------------

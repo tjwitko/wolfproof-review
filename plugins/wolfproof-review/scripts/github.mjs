@@ -1,5 +1,6 @@
 // The few GitHub API calls the review job makes: earlier inline comments, posting this run's inline
-// comments, listing them afterwards, and the one summary comment, created once and then edited in place.
+// comments, listing them afterwards, the pull request's files as GitHub diffs them, and the one summary
+// comment, created once and then edited in place.
 
 import { MARKER } from "./lib.mjs";
 
@@ -45,6 +46,15 @@ export async function botReviewComments(env) {
   const c = config(env);
   const comments = await all(c, `/repos/${c.repo}/pulls/${c.pr}/comments`);
   return comments.filter((x) => x.user?.login === c.bot);
+}
+
+/**
+ * The pull request's files as GitHub itself diffs them, each with its patch (three lines of context).
+ * GitHub leaves the patch out of a binary file and of a very large diff, and lists 3,000 files at most.
+ */
+export async function pullFiles(env) {
+  const c = config(env);
+  return all(c, `/repos/${c.repo}/pulls/${c.pr}/files`);
 }
 
 /** Create the summary comment, or edit the one an earlier run left. */

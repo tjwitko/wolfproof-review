@@ -122,3 +122,42 @@ test("a relative WOLFPROOF_BIN is from the directory the review starts in, not t
     s.done();
   }
 });
+
+test("a local review on a git without --attr-source still writes the diff, and says what it may miss", () => {
+  const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "wr-oldgit-")));
+  try {
+    const work = path.join(dir, "work");
+    const tmp = path.join(dir, "tmp");
+    const bin = path.join(dir, "bin");
+    for (const d of [work, tmp, bin]) mkdirSync(d, { recursive: true });
+    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    // A git older than 2.40, as far as --attr-source goes: it answers the way those versions do.
+    writeFileSync(
+      path.join(bin, "git"),
+      `#!/bin/sh
+for a in "$@"; do
+  case "$a" in --attr-source*) echo "unknown option: $a" >&2; echo "usage: git [-v | --version] ..." >&2; exit 129;; esac
+done
+exec "${realGit}" "$@"
+`
+    );
+    chmodSync(path.join(bin, "git"), 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: tmp };
+    delete env.WOLFPROOF_BIN;
+    const git = (...a) => assert.equal(spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...a], { cwd: work, env }).status, 0);
+    git("init", "-q", "-b", "main");
+    writeFileSync(path.join(work, "app.py"), "a = 1\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    git("switch", "-qc", "feature");
+    writeFileSync(path.join(work, "app.py"), "a = 1\nb = 2\n");
+    git("commit", "-qam", "change");
+    const r = spawnSync(process.execPath, [REVIEW, "local", "main"], { cwd: work, encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^note: this git has no --attr-source \(it came in git 2\.40\)/m);
+    const dirOf = /^instructions: (.*)$/m.exec(r.stdout)[1].replace(/\/prompt\.md$/, "");
+    assert.match(readFileSync(path.join(dirOf, "diff.patch"), "utf8"), /\+\+\+ b\/app\.py\n@@ -1,0 \+2 @@/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

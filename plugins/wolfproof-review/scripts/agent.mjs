@@ -259,19 +259,41 @@ export function logSafe(s) {
 /**
  * Run the review: model turns and tool calls until the model stops calling tools.
  * The log gets only each call's tool name and whether it worked, never content.
+ *
+ * maxInputTokens bounds the run's cost: the prompt tokens of all its turns together, cached or not
+ * (every turn sends the whole conversation again). A turn is not sent when the one before it, plus
+ * what was already used, would take the run past the budget, since each turn's prompt is at least
+ * as long as the last.
  * @returns {Promise<object>} what run.json records
  */
-export async function runReview({ adapter, prompt, tools, maxTurns = 60, deadline = Infinity, now = Date.now, log = console.log, sendOptions = {} }) {
-  const out = { status: "failed", provider: adapter.provider, model: adapter.model, turns: 0, calls: [], usage: { input: 0, output: 0 }, error: null };
+export async function runReview({ adapter, prompt, tools, maxTurns = 60, maxInputTokens = Infinity, deadline = Infinity, now = Date.now, log = console.log, sendOptions = {} }) {
+  const out = {
+    status: "failed",
+    provider: adapter.provider,
+    model: adapter.model,
+    turns: 0,
+    calls: [],
+    usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+    maxInputTokens: Number.isFinite(maxInputTokens) ? maxInputTokens : null,
+    stopped: null,
+    error: null,
+  };
   const messages = adapter.initial(prompt);
+  const promptTokens = (u) => u.input + u.cacheRead + u.cacheWrite;
+  let last = 0;
   try {
     for (;;) {
       if (out.turns >= maxTurns) throw new ProviderError(`stopped at the turn limit (${maxTurns})`);
       if (now() > deadline) throw new ProviderError(`stopped at the time limit, after ${out.turns} turn(s)`);
+      const used = promptTokens(out.usage);
+      if (out.turns > 0 && used + last > maxInputTokens) {
+        out.stopped = "input-tokens";
+        throw new ProviderError(`stopped at the input-token budget (${maxInputTokens}), after ${out.turns} turn(s) that used ${used}`);
+      }
       out.turns++;
       const res = await send(adapter, messages, TOOLS, sendOptions);
-      out.usage.input += res.usage.input;
-      out.usage.output += res.usage.output;
+      for (const k of Object.keys(out.usage)) out.usage[k] += res.usage[k] || 0;
+      last = promptTokens({ input: 0, cacheRead: 0, cacheWrite: 0, ...res.usage });
       // A reply that was cut off, or refused, is not a finished review, and a tool call in it may be
       // incomplete.
       if (CUT_OFF.has(res.stop)) throw new ProviderError(`the reply was cut off (${res.stop})`);

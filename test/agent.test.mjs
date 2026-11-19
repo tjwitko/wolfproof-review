@@ -237,7 +237,10 @@ test("runReview: tool calls, then a final answer; the log has tool names only", 
       { name: "create_inline_comment", ok: true },
       { name: "(unknown tool)", ok: false },
     ]);
-    assert.deepEqual(out.usage, { input: 600, output: 35 });
+    assert.deepEqual(out.usage, { input: 600, cacheRead: 0, cacheWrite: 0, output: 35 });
+    assert.equal(out.stopped, null);
+    // Every request asks for automatic prompt caching.
+    assert.ok(sent.every((b) => b.cache_control?.type === "ephemeral"));
     assert.equal(out.posted, 1);
     assert.equal(posted.length, 1);
     assert.deepEqual(log, ["turn 1: read_file ok", "turn 2: create_inline_comment ok", "turn 2: (unknown tool) error"]);
@@ -412,5 +415,53 @@ test("read_file moves past a single line longer than its budget", async () => {
     assert.match((await t.run("read_file", { path: "pr-head/app/bundle.min.js", offset: 2 })).content, /^2\tsecond/);
   } finally {
     w.done();
+  }
+});
+
+test("runReview: the input-token budget stops a run before a turn that would go past it", async () => {
+  const w = workspace();
+  try {
+    const { t } = tools(w.work);
+    // Each turn's prompt: 50 uncached, 900 read from the cache, 50 written to it; 1000 in all.
+    const turn = () => reply({ content: [{ type: "tool_use", id: "x", name: "glob", input: { pattern: "*" } }], usage: { input_tokens: 50, cache_read_input_tokens: 900, cache_creation_input_tokens: 50, output_tokens: 10 }, stop_reason: "tool_use" });
+    let calls = 0;
+    const fetchImpl = async () => (calls++, turn());
+    const a = adapter({ provider: "anthropic", apiKey: "k" });
+    const out = await runReview({ adapter: a, prompt: "p", tools: t, maxInputTokens: 3500, log: () => {}, sendOptions: { fetchImpl } });
+    assert.equal(out.status, "failed");
+    assert.equal(out.stopped, "input-tokens");
+    assert.equal(out.maxInputTokens, 3500);
+    // 3 turns use 3000; a 4th would take it to at least 4000, so it is never sent.
+    assert.equal(calls, 3);
+    assert.equal(out.turns, 3);
+    assert.deepEqual(out.usage, { input: 150, cacheRead: 2700, cacheWrite: 150, output: 30 });
+    assert.match(out.error, /input-token budget \(3500\), after 3 turn\(s\) that used 3000/);
+    // A run that finishes inside its budget is not stopped, and no budget means none.
+    const done = await runReview({ adapter: a, prompt: "p", tools: t, maxInputTokens: 3500, log: () => {}, sendOptions: { fetchImpl: async () => reply({ content: [], usage: { input_tokens: 10 }, stop_reason: "end_turn" }) } });
+    assert.equal(done.status, "ran");
+    assert.equal(done.maxInputTokens, 3500);
+    const free = await runReview({ adapter: a, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: async () => reply({ content: [], usage: {}, stop_reason: "end_turn" }) } });
+    assert.equal(free.maxInputTokens, null);
+  } finally {
+    w.done();
+  }
+});
+
+test("review.mjs run refuses a budget that is not a whole number, without calling anyone", () => {
+  const top = mkdtempSync(path.join(os.tmpdir(), "wr-budget-"));
+  try {
+    const out = path.join(top, "run.json");
+    writeFileSync(path.join(top, "prompt.md"), "p");
+    writeFileSync(path.join(top, "diff.patch"), DIFF);
+    const cli = new URL("../plugins/wolfproof-review/scripts/review.mjs", import.meta.url).pathname;
+    const r = spawnSync(process.execPath, [cli, "run", "--provider", "anthropic", "--prompt", "prompt.md", "--code-dir", ".", "--input-dir", ".", "--rulebook-dir", ".", "--diff", "diff.patch", "--max-comments", "3", "--max-input-tokens", "lots", "--head", "abc", "--out", out], {
+      cwd: top,
+      env: { PATH: process.env.PATH, REVIEW_API_KEY: "k" },
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 1);
+    assert.match(JSON.parse(readFileSync(out, "utf8")).error, /max-input-tokens is a whole number/);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
   }
 });

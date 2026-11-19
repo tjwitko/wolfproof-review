@@ -39,6 +39,10 @@ on:
         description: The most inline comments one run may post, 1 to 50.
         type: number
         default: 15
+      max-input-tokens:
+        description: The most prompt tokens one review may use across its turns, cached or not. A run that would go past it stops, and the summary says so.
+        type: number
+        default: 1000000
       paths-ignore:
         description: Globs, one per line or comma-separated, whose findings and changes are left out (generated code, vendored code).
         type: string
@@ -52,7 +56,7 @@ on:
         description: Your own API key for the provider. Without one, only the scanner summary is posted.
         required: false
       ANTHROPIC_API_KEY:
-        description: The older name, still read when the provider is anthropic and REVIEW_API_KEY is not set.
+        description: The older name, still read when the provider is anthropic, base-url is empty and REVIEW_API_KEY is not set.
         required: false
 
 env:
@@ -106,7 +110,10 @@ jobs:
           rm -rf "$out"
           mkdir -p "$out"
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
-          git -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$out/diff.patch"
+          # Attributes from an empty tree, so a .gitattributes in the pull request ("*.py -diff",
+          # "binary") cannot turn its changes into "Binary files differ". Real binaries still are.
+          noattr=$(git hash-object -t tree /dev/null)
+          git --attr-source="$noattr" -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$out/diff.patch"
           git -c core.quotePath=false ls-files > "$out/files.txt"
           note=""
           if [ -n "$RESULT" ] && [ -f "$RESULT" ]; then
@@ -212,7 +219,9 @@ jobs:
         run: |
           d=.wolfproof-review-git
           base=$(git -C "$d" merge-base "$BASE_SHA" "$HEAD_SHA")
-          git -C "$d" -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$RUNNER_TEMP/diff.patch"
+          # The scan job's command exactly, attributes from an empty tree included.
+          noattr=$(git -C "$d" hash-object -t tree /dev/null)
+          git -C "$d" --attr-source="$noattr" -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$RUNNER_TEMP/diff.patch"
           git -C "$d" -c core.quotePath=false ls-files > "$RUNNER_TEMP/files.txt"
           rm -rf "$d"
           mismatch=false
@@ -244,12 +253,13 @@ jobs:
       - name: Decide whether the model reviews
         id: plan
         env:
-          HAS_KEY: ${{ secrets.REVIEW_API_KEY != '' || (inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY != '') }}
+          HAS_KEY: ${{ secrets.REVIEW_API_KEY != '' || (inputs.provider == 'anthropic' && inputs.base-url == '' && secrets.ANTHROPIC_API_KEY != '') }}
           FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
           PROVIDER: ${{ inputs.provider }}
           MODEL: ${{ inputs.model }}
           BASE_URL: ${{ inputs.base-url }}
           MAX: ${{ inputs.max-comments }}
+          BUDGET: ${{ inputs.max-input-tokens }}
         run: |
           if [ "$PROVIDER" != anthropic ] && [ "$PROVIDER" != openai ]; then
             echo "::error::provider is anthropic or openai, not \"$PROVIDER\""; exit 1
@@ -265,6 +275,9 @@ jobs:
           fi
           if ! [[ "$MAX" =~ ^[0-9]+$ ]] || [ "$MAX" -lt 1 ] || [ "$MAX" -gt 50 ]; then
             echo "::error::max-comments is a number from 1 to 50, not \"$MAX\""; exit 1
+          fi
+          if ! [[ "$BUDGET" =~ ^[1-9][0-9]{0,9}$ ]]; then
+            echo "::error::max-input-tokens is a whole number of tokens, not \"$BUDGET\""; exit 1
           fi
           if [ ! -f "$IN/sorted.json" ]; then status=no-scan
           elif [ "$FORK" = "true" ]; then status=fork
@@ -302,17 +315,19 @@ jobs:
         continue-on-error: true
         timeout-minutes: 25
         env:
-          REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || (inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY) || '' }}
+          # The Anthropic key goes only to Anthropic's own API, never to a base-url gateway.
+          REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || (inputs.provider == 'anthropic' && inputs.base-url == '' && secrets.ANTHROPIC_API_KEY) || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PROVIDER: ${{ inputs.provider }}
           MODEL: ${{ inputs.model }}
           BASE_URL: ${{ inputs.base-url }}
           MAX: ${{ inputs.max-comments }}
+          BUDGET: ${{ inputs.max-input-tokens }}
         run: |
           node "$CLI" run --provider "$PROVIDER" --model "$MODEL" --base-url "$BASE_URL" --prompt "$IN/prompt.md" \
             --code-dir pr-head --input-dir "$IN" --rulebook-dir "$PLUGIN/rulebook" --diff "$IN/diff.patch" \
-            --max-comments "$MAX" --head "$HEAD_SHA" --out "$IN/run.json"
+            --max-comments "$MAX" --max-input-tokens "$BUDGET" --head "$HEAD_SHA" --out "$IN/run.json"
 
       - name: Check where the comments landed
         if: ${{ !cancelled() && steps.plan.outputs.status == 'run' }}

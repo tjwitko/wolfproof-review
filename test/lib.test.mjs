@@ -107,7 +107,16 @@ test("no result: nothing sorted, and the summary says the scan did not run", () 
   const body = renderSummary(s, { review: { status: "no-key" } });
   assert.match(body, /wolfproof did not produce a result for `abcdef1`/);
   assert.match(body, /The scan job failed\./);
-  assert.match(body, /no `REVIEW_API_KEY` secret \(or `ANTHROPIC_API_KEY`, for the Anthropic provider\)/);
+  assert.match(body, /no `REVIEW_API_KEY` secret \(or `ANTHROPIC_API_KEY`, for the Anthropic provider with no `base-url`\)/);
+});
+
+test("a run stopped at its input-token budget says so, with the budget and what it posted", () => {
+  const s = sortFindings({ result, diff, files, meta: { head: "abcdef123" } });
+  const body = renderSummary(s, { review: { status: "failed", stopped: "input-tokens", maxInputTokens: 1000000, posted: 2, note: "stopped at the input-token budget (1000000), after 9 turn(s) that used 980000" } });
+  assert.match(body, /stopped at its input-token budget of 1000000 tokens, before it finished/);
+  assert.match(body, /`max-input-tokens` input sets the budget/);
+  assert.match(body, /posted 2 inline comment\(s\) before it stopped/);
+  assert.doesNotMatch(body, /The review failed/);
 });
 
 test("the summary leads with changed lines and folds what was already there", () => {
