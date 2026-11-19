@@ -59,13 +59,15 @@ const readJson = (f) => {
 };
 const readText = (f) => (f && existsSync(f) ? readFileSync(f, "utf8") : "");
 const lines = (s) => String(s).split("\n").map((l) => l.trim()).filter(Boolean);
+// git ls-files' output, one path per line. Not trimmed: a space can be part of a name.
+const pathLines = (s) => String(s).split("\n").filter(Boolean);
 
 function sort(o) {
   need(o, "diff", "files", "out");
   const sorted = sortFindings({
     result: o.result ? readJson(o.result) : null,
     diff: readText(o.diff),
-    files: lines(readText(o.files)),
+    files: pathLines(readText(o.files)),
     root: o.root || "",
     ignore: typeof o.ignore === "string" ? lines(o.ignore.replace(/,/g, "\n")) : [],
     meta: o.meta ? readJson(o.meta) || {} : {},
