@@ -22,8 +22,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, localDirName, STAMP, wolfproofCommand } from "./lib.mjs";
-import { botReviewComments, postInlineComment, upsertSummary } from "./github.mjs";
+import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, changedFromPatches, diffDisagreement, localDirName, STAMP, wolfproofCommand } from "./lib.mjs";
+import { botReviewComments, postInlineComment, pullFiles, upsertSummary } from "./github.mjs";
 import { makeTools, runReview, logSafe } from "./agent.mjs";
 import { adapter } from "./providers.mjs";
 
@@ -136,13 +136,18 @@ async function review(o) {
       prompt: readText(o.prompt),
       tools,
       maxTurns: Number(o["max-turns"]) || 60,
+      maxInputTokens: inputBudget(o["max-input-tokens"]),
       deadline: Date.now() + (Number(o.minutes) || 20) * 60 * 1000,
     });
   } catch (err) {
-    out = { status: "failed", provider: o.provider, model: typeof o.model === "string" ? o.model : null, turns: 0, calls: [], usage: { input: 0, output: 0 }, posted: 0, error: logSafe(err.message) };
+    out = { status: "failed", provider: o.provider, model: typeof o.model === "string" ? o.model : null, turns: 0, calls: [], usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, posted: 0, stopped: null, error: logSafe(err.message) };
   }
   writeFileSync(o.out, JSON.stringify(out, null, 2));
-  console.log(`review: ${out.status} with ${out.provider} ${out.model || ""}, ${out.turns} turn(s), ${out.posted} comment(s), ${out.usage.input} input and ${out.usage.output} output tokens`);
+  const u = out.usage;
+  console.log(
+    `review: ${out.status} with ${out.provider} ${out.model || ""}, ${out.turns} turn(s), ${out.posted} comment(s), ` +
+      `${u.input + u.cacheRead + u.cacheWrite} input tokens (${u.input} uncached, ${u.cacheRead} read from the cache, ${u.cacheWrite} written to it) and ${u.output} output tokens`
+  );
   if (out.rejected && (out.rejected.offDiff || out.rejected.overLimit || out.rejected.badPath)) {
     console.log(`refused: ${out.rejected.offDiff} off the diff, ${out.rejected.overLimit} over the limit, ${out.rejected.badPath} outside the readable folders`);
   }
@@ -152,19 +157,45 @@ async function review(o) {
   }
 }
 
+/** The run's input-token budget: the --max-input-tokens given, else the default. */
+const DEFAULT_MAX_INPUT_TOKENS = 1000000;
+function inputBudget(v) {
+  if (v === undefined || v === true) return DEFAULT_MAX_INPUT_TOKENS;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`max-input-tokens is a whole number of at least 1, not "${String(v).slice(0, 40)}"`);
+  return n;
+}
+
+// After the review: where did its comments land? Checked against GitHub's own diff of the pull request
+// (its patches), not this job's diff, so a fault in the diff or its parser that let a comment through
+// the comment tool shows up here instead of being passed again by the same code.
 async function check(o) {
   need(o, "diff", "since", "out");
   const since = Date.parse(o.since);
-  let result = { posted: 0, offDiff: [], error: null };
+  let result = { posted: 0, offDiff: [], unchecked: [], disagree: [], error: null };
   try {
     const mine = (await botReviewComments()).filter((c) => Date.parse(c.created_at) >= since);
-    result = { posted: mine.length, offDiff: offDiff(mine, parseDiff(readText(o.diff))), error: null };
+    const { changed, unknown } = changedFromPatches(await pullFiles());
+    const checkable = mine.filter((c) => !unknown.has(c.path));
+    result = {
+      posted: mine.length,
+      offDiff: offDiff(checkable, changed),
+      unchecked: mine.filter((c) => unknown.has(c.path)).map((c) => ({ path: c.path, line: c.line ?? c.original_line ?? null })),
+      // Where this job's diff and GitHub's disagree, for the log: a parser fault, or a diff the
+      // two computed differently.
+      disagree: diffDisagreement(parseDiff(readText(o.diff)), changed, unknown),
+      error: null,
+    };
   } catch (err) {
     result.error = err.message;
   }
   writeFileSync(o.out, JSON.stringify(result, null, 2));
   console.log(`${result.posted} comment(s) this run, ${result.offDiff.length} off the diff${result.error ? ` (error: ${result.error})` : ""}`);
-  for (const x of result.offDiff) console.log(`::warning::wolfproof-review commented off the diff at ${x.path}:${x.line}`);
+  for (const x of result.offDiff) console.log(`::warning::wolfproof-review commented off the diff at ${logSafe(x.path)}:${x.line}`);
+  if (result.unchecked.length) console.log(`${result.unchecked.length} comment(s) on files GitHub shows no patch for, so not checked`);
+  if (result.disagree.length) {
+    console.log(`::notice::this job's diff and GitHub's disagree on ${result.disagree.length} file(s): ${result.disagree.slice(0, 10).map(logSafe).join(", ")}`);
+  }
 }
 
 async function summary(o) {
@@ -179,6 +210,8 @@ async function summary(o) {
     posted: checked?.posted ?? ran?.posted,
     offDiff: checked?.offDiff,
     note: ran?.error || (typeof o.note === "string" ? o.note : undefined),
+    stopped: ran?.stopped || undefined,
+    maxInputTokens: ran?.maxInputTokens ?? undefined,
   };
   const body = renderSummary(sorted, { review: shown });
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(/^<!--.*-->\n/, "") + "\n");
@@ -230,7 +263,9 @@ function local(o) {
   const f = (n) => path.join(dir, n);
 
   // The working tree against the merge base: committed and uncommitted changes to tracked files.
-  writeFileSync(f("diff.patch"), git(["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", mergeBase], cwd));
+  // Attributes from an empty tree, as in CI, so a "-diff" or "binary" in .gitattributes still shows the lines.
+  const noattr = git(["hash-object", "-t", "tree", "/dev/null"], cwd).trim();
+  writeFileSync(f("diff.patch"), git([`--attr-source=${noattr}`, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", mergeBase], cwd));
   writeFileSync(f("files.txt"), git(["-c", "core.quotePath=false", "ls-files"], cwd));
 
   let resultFile = null;

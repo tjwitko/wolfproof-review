@@ -130,15 +130,20 @@ scanner evidence and says so at the top.
   - **`grep` runs without a shell,** with the pattern after `-e` and `--`, and with an environment
     of `PATH` and `LC_ALL` only, so neither the key nor the token reaches it.
   - **The comment tool refuses** a line the change did not add or modify, and a comment past the
-    limit, before anything is posted. The after-run check stays as an independent second look.
+    limit, before anything is posted. The after-run check then reads the comments back and checks
+    them against GitHub's own diff of the pull request (`pulls/{pr}/files`), not this job's diff and
+    parser, so a fault in either shows up there instead of being passed twice.
   - **The log** gets each call's tool name and outcome, never content, and a provider's text never
     starts a line, so it cannot become a workflow command.
 - **The scan's artifact is the pull request's to shape.** The scan job runs its code, so the review
   job keeps only the four files the scan hands over (`diff.patch`, `files.txt`, `result.json`,
   `meta.json`), as plain files, and writes everything else itself. The head commit for comments comes
   from the workflow's event. The diff and the file list are computed again in the review job, from
-  the pull request's commits, so the lines the model may comment on are the change's own; a scan diff
-  that differs is flagged in the log and the summary.
+  the pull request's commits, with attributes from an empty tree, so a `.gitattributes` in the pull
+  request (`-diff`, `binary`) cannot hide a file's lines. The lines the model may comment on are the
+  ones that diff adds or modifies, read hunk by hunk by each header's line counts, so a changed line
+  that looks like a file header is still a line; a file git sees as binary by its content has none. A
+  scan diff that differs is flagged in the log and the summary.
 - **The key is in one step's environment:** the Review step's. A test fails if another step, or the
   job, gets it.
 - **The key goes only to the provider's URL.** Requests refuse redirects, since `fetch` would carry
@@ -179,7 +184,7 @@ teams.
 Each case runs three times. Results vary between runs of the same model, so one run proves little.
 
 - **Zero comments off the diff (deterministic).** A script checks every inline comment's line against
-  the diff. Any miss fails CI.
+  GitHub's diff of the pull request. Any miss fails CI.
 - **No scanner finding dropped (deterministic).** Every finding the sort put on a changed line appears
   in the summary.
 - **Recall on known defects.** Pull requests that add the defects behind wolfproof's corpus fixtures
@@ -189,7 +194,8 @@ Each case runs three times. Results vary between runs of the same model, so one 
   person mark each comment useful or not. Targets, to revisit: at least 7 in 10 useful, and a median
   of 3 or fewer comments on a pull request with no scanner finding.
 - **Cost and time per pull request,** recorded, not targeted, until there is a baseline. `run.json`
-  records each run's tokens and turns.
+  records each run's turns and tokens: uncached input, read from the cache, written to it, and
+  output.
 - **Per provider and model.** Each measurement is taken per provider and model, so a team can see
   what a cheaper or a self-hosted model gives up.
 
@@ -216,17 +222,25 @@ Each case runs three times. Results vary between runs of the same model, so one 
 ## Phase 1 as built
 
 - No `fail-on` input yet (phase 3). Inputs: `provider`, `model`, `base-url`, `max-comments`,
-  `paths-ignore`, and `review-ref` for this repository's own self-review.
-- The key: `REVIEW_API_KEY`. `ANTHROPIC_API_KEY` is still read for the anthropic provider, so callers
-  from before the rename keep working.
+  `max-input-tokens`, `paths-ignore`, and `review-ref` for this repository's own self-review.
+- The key: `REVIEW_API_KEY`. `ANTHROPIC_API_KEY` is still read for the anthropic provider when
+  `base-url` is empty, so callers from before the rename keep working; it never goes to a gateway.
+- Cost: Anthropic requests use automatic prompt caching (a top-level `cache_control`) and a
+  `max_tokens` of 16,000 per turn. `max-input-tokens` (default 1,000,000) bounds a run's prompt
+  tokens across its turns, cached or not; a turn that would go past it is not sent, and `run.json`
+  and the summary say the run stopped at its budget. The ten self-review runs of the redesign's pull
+  request used 253,000 to 566,000, before caching.
 - Pinned: `actions/checkout` v7.0.1; `upload-artifact` v7.0.2; `download-artifact` v8.0.2;
   `actions/setup-node` v7.1.0.
 - Summary-only mode when there is no key, or the pull request comes from a fork.
 - The review writes `run.json`: outcome, model, turns, each tool call's name and result, comments
   posted and refused, tokens, and the provider's error if it failed. The summary shows the model and,
   on a failure, that error.
-- After the review, a script lists the comments it posted and flags any on an unchanged line, in the
-  summary and as a workflow warning.
+- After the review, a script lists the comments it posted and flags any on a line GitHub's own diff
+  does not show as added or modified, in the summary and as a workflow warning. A comment on a file
+  GitHub sends no patch for (a very large diff) is counted as unchecked, and the log notes any file
+  where this job's diff and GitHub's disagree. GitHub ignores `.gitattributes` here: it diffs a file
+  marked `-diff` or `binary` as text and takes line comments on it.
 - Until v0.2.11 the review ran through `claude-code-action`. A probe on its v1.0.276 (run
   [44415312550](https://github.com/tjwitko/wolfproof-review/actions/runs/44415312550)) read the
   session's mode from its execution output: `default`, with Claude Code's own tools (Skill,

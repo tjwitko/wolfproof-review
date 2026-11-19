@@ -8,7 +8,7 @@ const DEFAULTS = {
   openai: { baseUrl: "https://api.openai.com/v1", model: null },
 };
 export const PROVIDER_NAMES = Object.keys(DEFAULTS);
-const MAX_TOKENS = 8192;
+const MAX_TOKENS = 16000;
 // OpenAI's cap also counts a reasoning model's hidden reasoning, so it needs room for that as well as
 // the reply; a turn that runs out stops with "length", which fails the review. Billing is per token
 // used, not per token allowed.
@@ -51,6 +51,9 @@ function anthropic(apiKey, model, base) {
       body: {
         model,
         max_tokens: MAX_TOKENS,
+        // Automatic prompt caching: the breakpoint moves to the end of the conversation each turn, so
+        // every turn reads the turns before it from the cache instead of paying for them again.
+        cache_control: { type: "ephemeral" },
         messages,
         tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema })),
       },
@@ -60,7 +63,13 @@ function anthropic(apiKey, model, base) {
       return {
         assistant: { role: "assistant", content },
         toolCalls: content.filter((b) => b?.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input ?? {} })),
-        usage: { input: json?.usage?.input_tokens || 0, output: json?.usage?.output_tokens || 0 },
+        // input_tokens is only the part not read from or written to the cache.
+        usage: {
+          input: json?.usage?.input_tokens || 0,
+          cacheRead: json?.usage?.cache_read_input_tokens || 0,
+          cacheWrite: json?.usage?.cache_creation_input_tokens || 0,
+          output: json?.usage?.output_tokens || 0,
+        },
         stop: json?.stop_reason || null,
       };
     },
@@ -104,13 +113,21 @@ function openai(apiKey, model, base) {
           }
           return { id: c.id, name: c.function?.name, input, inputError };
         }),
-        usage: { input: json?.usage?.prompt_tokens || 0, output: json?.usage?.completion_tokens || 0 },
+        // prompt_tokens includes the cached part, which OpenAI caches on its own; split it out so the
+        // fields mean the same as Anthropic's.
+        usage: openaiUsage(json?.usage),
         stop: choice.finish_reason || null,
       };
     },
     // Chat completions has no error flag on a tool result, so an error says so in its text.
     results: (results) => results.map((r) => ({ role: "tool", tool_call_id: r.id, content: r.isError ? `Error: ${r.content}` : r.content })),
   };
+}
+
+function openaiUsage(u) {
+  const prompt = u?.prompt_tokens || 0;
+  const cached = Math.min(u?.prompt_tokens_details?.cached_tokens || 0, prompt);
+  return { input: prompt - cached, cacheRead: cached, cacheWrite: 0, output: u?.completion_tokens || 0 };
 }
 
 /** The text with the key, and every run of 8 or more characters taken from it, replaced. */
@@ -146,7 +163,7 @@ export function errorMessage(text) {
 
 /**
  * One model turn, with retries on rate limits, overload and server errors.
- * @returns {Promise<{assistant: object, toolCalls: Array<{id, name, input, inputError?}>, usage: {input, output}, stop: string|null}>}
+ * @returns {Promise<{assistant: object, toolCalls: Array<{id, name, input, inputError?}>, usage: {input, cacheRead, cacheWrite, output}, stop: string|null}>}
  */
 export async function send(a, messages, tools, { fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), retries = 3, timeoutMs = 120000 } = {}) {
   for (let attempt = 0; ; attempt++) {

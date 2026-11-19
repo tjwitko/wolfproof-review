@@ -91,6 +91,22 @@ test("the reviewer's tools are read-only, and only the review step holds the key
   assert.match(workflow, /node "\$CLI" run --provider/);
 });
 
+test("the ANTHROPIC_API_KEY fallback holds only for Anthropic's own API, never for a base-url", () => {
+  const uses = workflow.match(/secrets\.ANTHROPIC_API_KEY[^\n]*/g) || [];
+  const lines = workflow.split("\n").filter((l) => l.includes("secrets.ANTHROPIC_API_KEY"));
+  assert.equal(uses.length, 2, "HAS_KEY and the Review step's REVIEW_API_KEY");
+  for (const l of lines) assert.match(l, /inputs\.provider == 'anthropic' && inputs\.base-url == '' && secrets\.ANTHROPIC_API_KEY/, l.trim());
+  assert.match(workflow, /^ {10}HAS_KEY: \$\{\{ secrets\.REVIEW_API_KEY != '' \|\| \(inputs\.provider == 'anthropic' && inputs\.base-url == '' && secrets\.ANTHROPIC_API_KEY != ''\) \}\}$/m);
+  assert.match(workflow, /^ {10}REVIEW_API_KEY: \$\{\{ secrets\.REVIEW_API_KEY \|\| \(inputs\.provider == 'anthropic' && inputs\.base-url == '' && secrets\.ANTHROPIC_API_KEY\) \|\| '' \}\}$/m);
+});
+
+test("the review has an input-token budget, checked and passed to the run", () => {
+  assert.match(workflow, /max-input-tokens:\n\s+description: [^\n]+\n\s+type: number\n\s+default: 1000000\n/);
+  assert.match(workflow, /BUDGET" =~ \^\[1-9\]\[0-9\]\{0,9\}\$/);
+  assert.match(workflow, /--max-input-tokens "\$BUDGET"/);
+  assert.match(read("plugins/wolfproof-review/scripts/review.mjs"), /const DEFAULT_MAX_INPUT_TOKENS = 1000000;/);
+});
+
 test("the review job keeps only the scan's own files, and reads its own results only when it ran", () => {
   const review = workflow.slice(workflow.indexOf("  review:\n"));
   const download = review.indexOf("- name: Download the scan");
@@ -119,13 +135,20 @@ test("the review job computes the diff from the pull request's commits, and ever
   const c = step("Compute the change");
   assert.match(c, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(c, /merge-base "\$BASE_SHA" "\$HEAD_SHA"/);
-  assert.match(c, /diff --no-color --no-ext-diff -U0 -M "\$base" "\$HEAD_SHA" > "\$RUNNER_TEMP\/diff\.patch"/);
+  assert.match(c, /--attr-source="\$noattr" -c core\.quotePath=false diff --no-color --no-ext-diff -U0 -M "\$base" "\$HEAD_SHA" > "\$RUNNER_TEMP\/diff\.patch"/);
   assert.match(c, /mv "\$RUNNER_TEMP\/diff\.patch" "\$IN\/diff\.patch"/);
   assert.match(c, /mv "\$RUNNER_TEMP\/files\.txt" "\$IN\/files\.txt"/);
   assert.match(c, /rm -rf "\$d"/);
   assert.match(c, /\.diffMismatch = \$mismatch/);
-  // The scan job's diff command is the same one, so on an honest run the two agree.
-  assert.match(workflow, /git -c core\.quotePath=false diff --no-color --no-ext-diff -U0 -M "\$base" "\$HEAD_SHA" > "\$out\/diff\.patch"/);
+  // The scan job's diff command is the same one, so on an honest run the two agree: the same flags, and
+  // attributes from the same empty tree, so a .gitattributes in the pull request hides no lines.
+  const scan = workflow.slice(0, workflow.indexOf("  review:\n"));
+  const cmd = (text, git, out) => {
+    const m = new RegExp(`^ *noattr=\\$\\(${git} hash-object -t tree /dev/null\\)\\n *${git} (--attr-source="\\$noattr" .*) > "${out}/diff\\.patch"$`, "m").exec(text);
+    assert.ok(m, `the diff command writing ${out}/diff.patch`);
+    return m[1];
+  };
+  assert.equal(cmd(c, 'git -C "\\$d"', "\\$RUNNER_TEMP"), cmd(scan, "git", "\\$out"));
   // Every reader takes $IN/diff.patch, which is now this job's own.
   assert.match(step("Sort the findings"), /--diff "\$IN\/diff\.patch" --files "\$IN\/files\.txt"/);
   assert.match(step("Build the prompt"), /--diff "\$IN\/diff\.patch"/);

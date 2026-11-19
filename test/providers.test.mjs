@@ -28,14 +28,16 @@ test("anthropic: request shape, tool calls back, results as tool_result blocks",
   assert.equal(req.headers["x-api-key"], "sk-test");
   assert.equal(req.headers["anthropic-version"], "2023-06-01");
   assert.deepEqual(req.body.messages, [{ role: "user", content: "hi" }]);
+  assert.equal(req.body.max_tokens, 16000);
+  assert.deepEqual(req.body.cache_control, { type: "ephemeral" });
   assert.deepEqual(req.body.tools.map((t) => Object.keys(t)), TOOLS.map(() => ["name", "description", "input_schema"]));
   const r = a.parse({
     content: [{ type: "text", text: "looking" }, { type: "tool_use", id: "tu1", name: "read_file", input: { path: "pr-head/a.py" } }],
-    usage: { input_tokens: 10, output_tokens: 3 },
+    usage: { input_tokens: 10, cache_read_input_tokens: 4000, cache_creation_input_tokens: 600, output_tokens: 3 },
     stop_reason: "tool_use",
   });
   assert.deepEqual(r.toolCalls, [{ id: "tu1", name: "read_file", input: { path: "pr-head/a.py" } }]);
-  assert.deepEqual(r.usage, { input: 10, output: 3 });
+  assert.deepEqual(r.usage, { input: 10, cacheRead: 4000, cacheWrite: 600, output: 3 });
   assert.equal(r.assistant.content.length, 2);
   assert.deepEqual(a.results([{ id: "tu1", content: "x", isError: false }, { id: "tu2", content: "no", isError: true }]), [
     { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "x" }, { type: "tool_result", tool_use_id: "tu2", content: "no", is_error: true }] },
@@ -53,11 +55,13 @@ test("openai: request shape, tool calls with JSON arguments, results as tool mes
     { id: "c1", type: "function", function: { name: "grep", arguments: '{"pattern":"execute"}' } },
     { id: "c2", type: "function", function: { name: "glob", arguments: "{not json" } },
   ];
-  const r = a.parse({ choices: [{ message: { content: null, tool_calls: calls }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 7, completion_tokens: 2 } });
+  const r = a.parse({ choices: [{ message: { content: null, tool_calls: calls }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 7, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 5 } } });
   assert.deepEqual(r.toolCalls[0], { id: "c1", name: "grep", input: { pattern: "execute" }, inputError: null });
   assert.match(r.toolCalls[1].inputError, /not valid JSON/);
   assert.deepEqual(r.assistant, { role: "assistant", content: null, tool_calls: calls });
-  assert.deepEqual(r.usage, { input: 7, output: 2 });
+  // prompt_tokens includes the cached part; the fields mean what Anthropic's do.
+  assert.deepEqual(r.usage, { input: 2, cacheRead: 5, cacheWrite: 0, output: 2 });
+  assert.equal(req.body.cache_control, undefined);
   assert.deepEqual(a.results([{ id: "c1", content: "ok", isError: false }, { id: "c2", content: "bad", isError: true }]), [
     { role: "tool", tool_call_id: "c1", content: "ok" },
     { role: "tool", tool_call_id: "c2", content: "Error: bad" },
