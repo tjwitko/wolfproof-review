@@ -364,12 +364,15 @@ test("runReview redacts the key from any error it records, not only HTTP errors"
     const { t } = tools(w.work);
     const key = ["sk", "live", "abcdefgh12345678"].join("-");
     const a = adapter({ provider: "openai", apiKey: key, model: "m" });
-    const echo = async () => {
-      throw new Error(`proxy said: Authorization: Bearer ${key}`);
+    // An error raised past send's own messages, carrying the key, as a parse of an echoed body might.
+    const leaky = adapter({ provider: "openai", apiKey: key, model: "m" });
+    leaky.parse = () => {
+      throw new Error(`bad body: Authorization: Bearer ${key}`);
     };
-    const out = await runReview({ adapter: a, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: echo, sleep: async () => {}, retries: 0 } });
+    const out = await runReview({ adapter: leaky, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: async () => reply({ choices: [] }) } });
     assert.equal(out.status, "failed");
     assert.doesNotMatch(out.error, /abcdefgh|12345678/);
+    assert.match(out.error, /bad body: Authorization: Bearer \[redacted\]/);
     const notJson = { ok: true, status: 200, headers: { get: () => null }, json: async () => JSON.parse(`<html>${key}</html>`), text: async () => "" };
     const bad = await runReview({ adapter: a, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: async () => notJson } });
     assert.equal(bad.error, "openai's response was not valid JSON");
