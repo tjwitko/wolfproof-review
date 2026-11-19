@@ -102,3 +102,34 @@ test("the review job keeps only the scan's own files, and reads its own results 
   assert.match(review, /if \[ "\$STATUS" = run \]; then\n\s+\[ -f "\$IN\/run\.json" \]/);
   assert.match(review, /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}[\s\S]*--head "\$HEAD_SHA"/);
 });
+
+test("the review job computes the diff from the pull request's commits, and everything uses it", () => {
+  const review = workflow.slice(workflow.indexOf("  review:\n"));
+  const at = (name) => review.indexOf(`- name: ${name}`);
+  const trim = at("Keep only the scan's own files");
+  const history = at("Check out the pull request's history, for the diff");
+  const compute = at("Compute the change");
+  assert.ok(trim > 0 && history > trim && compute > history, "after the artifact is trimmed");
+  for (const later of ["Sort the findings", "Build the prompt", "Review", "Check where the comments landed"]) {
+    assert.ok(at(later) > compute, `${later} comes after the diff is computed`);
+  }
+  const step = (name) => review.slice(at(name), review.indexOf("\n      - name: ", at(name) + 1));
+  // The history: the head's full history, no stored credentials, in a folder the model cannot read.
+  assert.match(step("Check out the pull request's history, for the diff"), /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}\n\s+path: \.wolfproof-review-git\n\s+fetch-depth: 0\n\s+persist-credentials: false/);
+  const c = step("Compute the change");
+  assert.match(c, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(c, /merge-base "\$BASE_SHA" "\$HEAD_SHA"/);
+  assert.match(c, /diff --no-color --no-ext-diff -U0 -M "\$base" "\$HEAD_SHA" > "\$RUNNER_TEMP\/diff\.patch"/);
+  assert.match(c, /mv "\$RUNNER_TEMP\/diff\.patch" "\$IN\/diff\.patch"/);
+  assert.match(c, /mv "\$RUNNER_TEMP\/files\.txt" "\$IN\/files\.txt"/);
+  assert.match(c, /rm -rf "\$d"/);
+  assert.match(c, /\.diffMismatch = \$mismatch/);
+  // The scan job's diff command is the same one, so on an honest run the two agree.
+  assert.match(workflow, /git -c core\.quotePath=false diff --no-color --no-ext-diff -U0 -M "\$base" "\$HEAD_SHA" > "\$out\/diff\.patch"/);
+  // Every reader takes $IN/diff.patch, which is now this job's own.
+  assert.match(step("Sort the findings"), /--diff "\$IN\/diff\.patch" --files "\$IN\/files\.txt"/);
+  assert.match(step("Build the prompt"), /--diff "\$IN\/diff\.patch"/);
+  assert.match(step("Review"), /--diff "\$IN\/diff\.patch"/);
+  assert.match(step("Check where the comments landed"), /--diff "\$IN\/diff\.patch"/);
+  assert.doesNotMatch(step("Review"), /wolfproof-review-git/, "the model's tools never get the history");
+});

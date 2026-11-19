@@ -181,3 +181,10 @@ test("a real wolfproof result with infrastructure findings sorts without a diff"
   const docker = s.findings.find((f) => f.check === "dockerfile");
   assert.deepEqual(docker.locations.map((l) => [l.file, l.line]), [["Dockerfile", 1]]);
 });
+
+test("the summary warns when the scan's diff did not match the pull request's commits", () => {
+  const plain = renderSummary(sortFindings({ result, diff, files, meta: { head: "abc1234" } }), {});
+  assert.doesNotMatch(plain, /did not match/);
+  const forged = renderSummary(sortFindings({ result, diff, files, meta: { head: "abc1234", diffMismatch: true } }), {});
+  assert.match(forged, /> ⚠️ The scan job's diff did not match the pull request's commits, so this review used the diff it computed itself/);
+});

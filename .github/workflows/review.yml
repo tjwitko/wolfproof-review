@@ -191,6 +191,42 @@ jobs:
           find "$IN" -mindepth 1 -maxdepth 1 \( ! -type f -o ! \( -name diff.patch -o -name files.txt -o -name result.json -o -name meta.json \) \) -exec rm -rf {} +
           ls -A "$IN"
 
+      # The change itself, from the pull request's commits, in place of the scan's diff.patch and
+      # files.txt: the scan job ran the pull request's code, which could have rewritten them to widen
+      # the lines the model may comment on and blind the check of where it commented. This history is
+      # outside the folders the model can read, and is removed once the diff is written.
+      - name: Check out the pull request's history, for the diff
+        if: hashFiles('.wolfproof-review-input/meta.json') != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .wolfproof-review-git
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute the change
+        if: hashFiles('.wolfproof-review-input/meta.json') != ''
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          d=.wolfproof-review-git
+          base=$(git -C "$d" merge-base "$BASE_SHA" "$HEAD_SHA")
+          git -C "$d" -c core.quotePath=false diff --no-color --no-ext-diff -U0 -M "$base" "$HEAD_SHA" > "$RUNNER_TEMP/diff.patch"
+          git -C "$d" -c core.quotePath=false ls-files > "$RUNNER_TEMP/files.txt"
+          rm -rf "$d"
+          mismatch=false
+          if ! cmp -s "$RUNNER_TEMP/diff.patch" "$IN/diff.patch"; then
+            mismatch=true
+            echo "::warning::The scan job's diff does not match the pull request's commits. This review uses the diff it computed itself."
+          fi
+          mv "$RUNNER_TEMP/diff.patch" "$IN/diff.patch"
+          mv "$RUNNER_TEMP/files.txt" "$IN/files.txt"
+          jq --arg head "$HEAD_SHA" --arg mergeBase "$base" --argjson mismatch "$mismatch" \
+            '.head = $head | .mergeBase = $mergeBase | .diffMismatch = $mismatch' "$IN/meta.json" > "$RUNNER_TEMP/meta.json"
+          mv "$RUNNER_TEMP/meta.json" "$IN/meta.json"
+          echo "$(grep -c '^diff --git' "$IN/diff.patch") changed file(s), merge base ${base:0:7}"
+
       - name: Sort the findings by what the pull request touched
         env:
           IGNORE: ${{ inputs.paths-ignore }}
