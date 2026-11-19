@@ -18,6 +18,7 @@ const workflow = readFileSync(new URL("../.github/workflows/review.yml", import.
 const scanStep = workflow.slice(workflow.indexOf('out="$RUNNER_TEMP/wolfproof-review-input"'));
 const noattrLine = /^ *(noattr=\$\(git hash-object -t tree \/dev\/null\))$/m.exec(scanStep)[1];
 const diffLine = /^ *(git --attr-source="\$noattr" [^\n]*> "\$out\/diff\.patch")$/m.exec(scanStep)[1];
+const filesLine = /^ *(git [^\n]*ls-files[^\n]*> "\$out\/files\.txt")$/m.exec(scanStep)[1];
 
 const G = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"];
 
@@ -26,13 +27,18 @@ const G = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.
  * two. With `withPatches`, also each file as GitHub's pulls/{pr}/files has it: its hunks with three
  * lines of context and no headers.
  */
-function diffOf(base, head, { withPatches = false } = {}) {
+function diffOf(base, head, { withPatches = false, withFiles = false } = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "wr-diff-"));
   const git = (...a) => execFileSync("git", [...G, ...a], { cwd: dir, encoding: "utf8" });
   try {
     git("init", "-q");
     const write = (files) => {
       for (const [f, body] of Object.entries(files)) {
+        // null removes the file: with a new file of the same content, git -M sees a rename.
+        if (body === null) {
+          rmSync(path.join(dir, f));
+          continue;
+        }
         mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
         writeFileSync(path.join(dir, f), body);
       }
@@ -44,11 +50,12 @@ function diffOf(base, head, { withPatches = false } = {}) {
     git("commit", "-q", "-m", "head");
     const out = path.join(dir, "out");
     mkdirSync(out);
-    execFileSync("bash", ["-ec", `${noattrLine}\n${diffLine}`], {
+    execFileSync("bash", ["-ec", `${noattrLine}\n${diffLine}\n${filesLine}`], {
       cwd: dir,
       env: { PATH: process.env.PATH, base: git("rev-parse", "HEAD~1").trim(), HEAD_SHA: git("rev-parse", "HEAD").trim(), out },
     });
     const diff = readFileSync(path.join(out, "diff.patch"), "utf8");
+    if (withFiles) return { diff, filesTxt: readFileSync(path.join(out, "files.txt"), "utf8") };
     if (!withPatches) return diff;
     const names = git("diff", "--name-only", "HEAD~1", "HEAD").split("\n").filter(Boolean);
     const files = names.map((filename) => {
@@ -210,8 +217,177 @@ test("a name with a leading space gets its lines, and the file list keeps the sp
     assert.equal(r.status, 0, r.stderr);
     const sorted = JSON.parse(readFileSync(at("sorted.json"), "utf8"));
     assert.deepEqual(sorted.change.changedFiles, [LEADING]);
-    assert.deepEqual(sorted.findings[0].locations, [], "lead.py is not a file of this repository");
+    assert.deepEqual(sorted.findings[0].locations, [{ file: LEADING, line: 1, group: "changed-line" }], "lead.py is not a file of this repository");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Where a finding is, when its file's name has a space or has to be quoted ---------------------
+
+const CLI = new URL("../plugins/wolfproof-review/scripts/review.mjs", import.meta.url).pathname;
+
+/**
+ * The scan job's diff.patch and files.txt for a change from `base` to `head`, then review.mjs sort
+ * over them with wolfproof findings whose messages are `messages`; the sorted findings, in order.
+ */
+function sortedIn(base, head, messages, { root } = {}) {
+  const { diff, filesTxt } = diffOf(base, head, { withFiles: true });
+  const dir = mkdtempSync(path.join(os.tmpdir(), "wr-sort-"));
+  try {
+    const at = (n) => path.join(dir, n);
+    writeFileSync(at("diff.patch"), diff);
+    writeFileSync(at("files.txt"), filesTxt);
+    writeFileSync(at("result.json"), JSON.stringify({ exitCode: 1, findings: messages.map((message) => ({ severity: "blocking", message })) }));
+    const args = ["sort", "--result", at("result.json"), "--diff", at("diff.patch"), "--files", at("files.txt"), "--out", at("sorted.json")];
+    if (root) args.push("--root", root);
+    const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const sorted = JSON.parse(readFileSync(at("sorted.json"), "utf8"));
+    const byMessage = new Map(sorted.findings.map((f) => [f.message, f]));
+    return { diff, sorted, findings: messages.map((m) => byMessage.get(m)) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const where = (f) => [f.group, f.locations.map((l) => [l.file, l.line, l.group])];
+// The finding's group and its locations, in any order: every file whose name fits is named.
+const byFile = ([group, locs]) => [group, [...locs].sort((x, y) => (JSON.stringify(x) < JSON.stringify(y) ? -1 : 1))];
+const assertWhere = (f, expected, message) => assert.deepEqual(byFile(where(f)), byFile(expected), message);
+const XACE = ["x", "ace.py"].join(" ");
+const YACE = ["y", "ace.py"].join(" ");
+
+test("a finding in a new file with a space in its name sorts with the change: on its line, or in its file", () => {
+  // y ace.py was there already; the change edits its line 3 only.
+  const yBefore = lines(30);
+  const yAfter = yBefore.replace("x3 = 3", "x3 = 'changed'");
+  const { findings } = sortedIn(
+    { "keep.py": lines(3), [YACE]: yBefore },
+    { [XACE]: lines(25), [YACE]: yAfter },
+    [`sast: SQL injection — ${XACE}:20`, `sast: SQL injection — /work/p/${YACE}:20`],
+    { root: "/work/p" }
+  );
+  assertWhere(findings[0], ["changed-line", [[XACE, 20, "changed-line"]]]);
+  assertWhere(findings[1], ["changed-file", [[YACE, 20, "changed-file"]]]);
+});
+
+test("beside an unchanged ace.py, x ace.py:20 names both and sorts with the change, and ace.py:20 names only ace.py", () => {
+  const { findings } = sortedIn({ "ace.py": lines(30) }, { [XACE]: lines(25) }, [`sast: SQL injection — ${XACE}:20`, "sast: SQL injection — ace.py:20"]);
+  assertWhere(findings[0], ["changed-line", [[XACE, 20, "changed-line"], ["ace.py", 20, "elsewhere"]]]);
+  assertWhere(findings[1], ["elsewhere", [["ace.py", 20, "elsewhere"]]]);
+});
+
+test("text that fits a name with a space at either end and its unchanged twin names both, so the finding stays with the change", () => {
+  const { findings } = sortedIn(
+    { "victim.py": lines(30), "lead.py": lines(30) },
+    { [TRAILING]: lines(25), [LEADING]: lines(25) },
+    [
+      `sast: SQL injection — ${TRAILING}:20`, // "victim.py :20"
+      "sast: SQL injection — victim.py — line 20",
+      `sast: SQL injection —  ${LEADING.trimStart()}:20`, // two spaces: the separator and the name's own
+      "sast: SQL injection — lead.py:20", // the separator's space is also where " lead.py" starts
+      "sast: SQL injection — victim.py:20",
+      "sast: SQL injection (lead.py:20)",
+    ]
+  );
+  const both = (spaced, plain) => ["changed-line", [[spaced, 20, "changed-line"], [plain, 20, "elsewhere"]]];
+  assertWhere(findings[0], both(TRAILING, "victim.py"));
+  assertWhere(findings[1], both(TRAILING, "victim.py"));
+  assertWhere(findings[2], both(LEADING, "lead.py"));
+  assertWhere(findings[3], both(LEADING, "lead.py"));
+  // Text that fits only the plain name: the unchanged file alone.
+  assertWhere(findings[4], ["elsewhere", [["victim.py", 20, "elsewhere"]]]);
+  assertWhere(findings[5], ["elsewhere", [["lead.py", 20, "elsewhere"]]]);
+});
+
+// wolfproof's own message shapes, with the name of a new file that is an unchanged one plus a space.
+const shapes = (f) => [
+  [`sast: SQL injection (${f}:20)`, 20],
+  [`checkov (${f}): 3 finding(s)`, null],
+  [`secret-guard: ${f}: aws-access-key-id`, null],
+  [`workload identity: ${f}. It hides a credential`, null],
+  [`terraform: terraform_plan(${f}) failed`, null],
+];
+
+for (const [label, spaced] of [["ends", "app.py" + " "], ["starts", " " + "app.py"]]) {
+  test(`each of wolfproof's message shapes sorts with the change for a new file whose name ${label} with a space, beside an unchanged app.py`, () => {
+    const cases = shapes(spaced);
+    // Text that fits only the plain name, with no space next to it, still names only the unchanged file.
+    const plainOnly = ["sast: SQL injection (app.py:20)", "sast: SQL injection —app.py:20"];
+    const { findings } = sortedIn({ "app.py": lines(30) }, { [spaced]: lines(25) }, [...cases.map(([m]) => m), ...plainOnly]);
+    for (const [i, [m, line]] of cases.entries()) {
+      const group = line ? "changed-line" : "changed-file";
+      assertWhere(findings[i], [group, [[spaced, line, group], ["app.py", line, "elsewhere"]]], m);
+    }
+    for (const [i] of plainOnly.entries()) {
+      assertWhere(findings[cases.length + i], ["elsewhere", [["app.py", 20, "elsewhere"]]], plainOnly[i]);
+    }
+  });
+}
+
+// A second file whose name takes in the first's, from the dash before it, or from the words before that.
+const DASH = ["—", "evil.py"].join(" ");
+const WRAP = ["injection", "—", "evil.py"].join(" ");
+
+test("a second file whose name takes in the first's adds a candidate and never takes the finding off the changed line", () => {
+  const evil = { "evil.py": lines(25) };
+  const messages = ["sast: SQL injection — evil.py:20", "sast: SQL injection — evil.py, line 20"];
+  const cases = [
+    ["an empty file", { "keep.py": lines(3) }, { ...evil, [DASH]: "" }, DASH, "elsewhere"],
+    ["an untouched file renamed", { "keep.py": lines(3), "old.py": lines(10) }, { ...evil, "old.py": null, [DASH]: lines(10) }, DASH, "elsewhere"],
+    ["a one-line file", { "keep.py": lines(3) }, { ...evil, [DASH]: "x = 1\n" }, DASH, "changed-file"],
+    ["an empty file that also takes in the words before the dash", { "keep.py": lines(3) }, { ...evil, [WRAP]: "" }, WRAP, "elsewhere"],
+  ];
+  for (const [label, base, head, other, otherGroup] of cases) {
+    const { diff, findings } = sortedIn(base, head, messages);
+    if (otherGroup === "elsewhere") assert.ok(!parseDiff(diff).has(other), `${label}: no "+++ " header, so not in the change`);
+    // The "line 20" in words reaches both names, though one overlaps the other.
+    for (const f of findings) assertWhere(f, ["changed-line", [["evil.py", 20, "changed-line"], [other, 20, otherGroup]]], `${label}: ${f.message}`);
+  }
+});
+
+test("trailing punctuation can be the name's own: a new app.py. beside an unchanged app.py sorts with the change", () => {
+  const dotted = "app.py" + ".";
+  const { findings } = sortedIn({ "app.py": lines(30) }, { [dotted]: lines(25) }, [
+    `a marker this change added, not blocking: ${dotted}. It hides sast findings`,
+    "sast: SQL injection — app.py:20",
+  ]);
+  assertWhere(findings[0], ["changed-file", [[dotted, null, "changed-file"], ["app.py", null, "elsewhere"]]]);
+  assertWhere(findings[1], ["elsewhere", [["app.py", 20, "elsewhere"]]]);
+});
+
+test("the project root leads a name but never cuts one: a folder that repeats it stays part of the file's name", () => {
+  // The runner's workspace, repeated inside the pull request's own tree; with and without an unchanged
+  // ab.py that cutting it out would leave.
+  const R = "/home/runner/work/repo/repo";
+  const nested = ["a", R.slice(1), "b.py"].join("/");
+  for (const base of [{ "ab.py": lines(30) }, { "keep.py": lines(3) }]) {
+    const { findings } = sortedIn(base, { [nested]: lines(25) }, [`sast: SQL injection — ${nested}:20`, `sast: SQL injection — ${R}/${nested}:20`], { root: R });
+    for (const f of findings) assertWhere(f, ["changed-line", [[nested, 20, "changed-line"]]], f.message);
+  }
+  // A relative root: "repo" inside my-repo/new.py is not the root, with or without an unchanged my-new.py.
+  for (const base of [{ "my-new.py": lines(30) }, { "keep.py": lines(3) }]) {
+    const { findings } = sortedIn(base, { "my-repo/new.py": lines(25) }, ["sast: SQL injection — my-repo/new.py:20", "sast: SQL injection — repo/my-repo/new.py:20"], { root: "repo" });
+    for (const f of findings) assertWhere(f, ["changed-line", [["my-repo/new.py", 20, "changed-line"]]], f.message);
+  }
+  // A root with a space in it still leads both a plain name and one with a space.
+  const spacedRoot = "/work/My Repo";
+  const { findings } = sortedIn({ "keep.py": lines(3) }, { "app.py": lines(25), [XACE]: lines(25) }, [`sast: x — ${spacedRoot}/app.py:20`, `sast: x — ${spacedRoot}/${XACE}:20`], { root: spacedRoot });
+  assertWhere(findings[0], ["changed-line", [["app.py", 20, "changed-line"]]]);
+  assertWhere(findings[1], ["changed-line", [[XACE, 20, "changed-line"]]]);
+});
+
+test("names git quotes (a tab, a double quote, a backslash, a newline) are read as the names they are", async () => {
+  const odd = ["t\tab.py", 'q"uote.py', ["back", "slash.py"].join("\\"), "nl\nx.py", ["sp ace", "tab.py"].join("\t")];
+  const head = Object.fromEntries(odd.map((n) => [n, lines(5)]));
+  const { diff, findings } = sortedIn({ "keep.py": lines(3) }, head, odd.map((n) => `sast: SQL injection — ${n}:3`));
+  assert.ok(diff.includes('+++ "b/t\\tab.py"'), "git quotes the name in the header");
+  const d = parseDiff(diff);
+  assert.deepEqual([...d.keys()].sort(), [...odd].sort());
+  for (const [i, n] of odd.entries()) {
+    assert.deepEqual(d.get(n).ranges, [[1, 5]], JSON.stringify(n));
+    assertWhere(findings[i], ["changed-line", [[n, 3, "changed-line"]]], JSON.stringify(n));
+    assert.equal((await comment(diff, { path: n, line: 3, body: "x" })).isError, false, JSON.stringify(n));
   }
 });

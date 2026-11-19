@@ -68,10 +68,32 @@ export function parseDiff(text) {
   return files;
 }
 
-function unquote(p) {
-  // git quotes a path with unusual characters: "b/caf\303\251.js". Good enough to match plain names;
-  // a quoted one simply matches nothing, which puts its findings in "elsewhere", never on a line.
-  return p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
+// The escapes git writes in a quoted name (core.quotePath=false still quotes a tab, a newline, a double
+// quote, a backslash and other control characters), with \ooo for one byte of the name.
+const ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+/** A name as git writes it in a "+++ " header, quoted when it has to be: "b/t\tab.py" is b/<tab>ab.py. */
+export function unquote(p) {
+  if (!(p.length >= 2 && p.startsWith('"') && p.endsWith('"'))) return p;
+  // A backslash byte is never part of a multi-byte UTF-8 character, so the escapes can be read from the bytes.
+  const src = Buffer.from(p.slice(1, -1), "utf8");
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== 0x5c || i + 1 >= src.length) {
+      out.push(src[i]);
+      continue;
+    }
+    const oct = src.subarray(i + 1, i + 4).toString("latin1");
+    const next = String.fromCharCode(src[i + 1]);
+    if (/^[0-3][0-7]{2}$/.test(oct)) {
+      out.push(parseInt(oct, 8));
+      i += 3;
+    } else if (next in ESCAPES) {
+      out.push(ESCAPES[next]);
+      i += 1;
+    } else out.push(src[i]);
+  }
+  return Buffer.from(out).toString("utf8");
 }
 
 export function onChangedLine(changed, file, line) {
@@ -107,42 +129,108 @@ export function checkOf(message) {
   return m ? m[1] : "other";
 }
 
+const PATH_CHAR = /[A-Za-z0-9_@+.\/-]/;
 const TOKEN = /[A-Za-z0-9_@+.\/-]+(?::\d+(?:-\d+)?)?/g;
+const PLAIN_NAME = /^[A-Za-z0-9_@+.\/-]+$/;
+
+// The repository's names a token cannot hold whole (a space, a quote, a letter outside ASCII), longest
+// first, found by searching for each name itself. Kept per file set: sortFindings asks once per finding.
+const oddNames = new WeakMap();
+function oddNamesOf(fileSet) {
+  let list = oddNames.get(fileSet);
+  if (!list) {
+    list = [...fileSet].filter((f) => f && !PLAIN_NAME.test(f)).sort((a, b) => b.length - a.length);
+    oddNames.set(fileSet, list);
+  }
+  return list;
+}
 
 /**
  * The repository files a message names, with a line when it gives one. Only names that are files in
  * the repository count, so "0.0.0.0:0" or "node:20-alpine" are never read as locations.
+ *
+ * Every file whose name fits the text at a place is named, overlapping or not, and the sort takes the
+ * best-placed of them: "x ace.py:20" names both x ace.py and ace.py. A pull request picks its own file
+ * names, so it can add candidates (a file named "— evil.py", empty or renamed and so not in the
+ * change) but never take its own changed file out of them. A space at either end of a name is also the
+ * space between words, so "victim.py :20" names victim.py as well, with the line; text that fits only
+ * app.py ("(app.py:20)") names only app.py. Trailing punctuation may be the name's own or the
+ * sentence's: "app.py.. It hides" names app.py. and app.py.
+ *
+ * The project's root may lead a name ("/work/p/app.py:3") and counts in its match. The message itself
+ * is never rewritten, so a folder that repeats the root's path stays part of the name it is in.
  */
 export function locationsIn(message, fileSet, root = "") {
   const text = String(message || "");
   const prefix = root ? root.replace(/\/+$/, "") + "/" : "";
-  const found = [];
   const hits = [];
-  for (const m of text.matchAll(TOKEN)) {
-    let token = m[0].replace(/[.,;)]+$/, "");
-    let line = null;
-    const withLine = /^(.*?):(\d+)(?:-\d+)?$/.exec(token);
-    if (withLine) {
-      token = withLine[1];
-      line = Number(withLine[2]);
+  // A name at `at`, its lead-in (the root or "./") starting at `start`: its line, and where it ends,
+  // or null when a path character runs on into the name from either side.
+  const fit = (start, at, name) => {
+    if (start > 0 && PATH_CHAR.test(text[start - 1])) return null;
+    const lineRef = /^:(\d+)(?:-\d+)?/.exec(text.slice(at + name.length));
+    const end = at + name.length + (lineRef ? lineRef[0].length : 0);
+    const next = text.slice(end).replace(/^[.,;)]+/, "")[0];
+    if (next !== undefined && PATH_CHAR.test(next)) return null;
+    return { line: lineRef ? Number(lineRef[1]) : null, end };
+  };
+  const leadIn = (at) =>
+    prefix && text.startsWith(prefix, at - prefix.length) && !(at - prefix.length > 0 && PATH_CHAR.test(text[at - prefix.length - 1]))
+      ? at - prefix.length
+      : text.startsWith("./", at - 2)
+        ? at - 2
+        : at;
+  // A plain name is one token. Its lead-in is part of the token unless the root has a blank in it. The
+  // token with each length of its trailing punctuation, all of it to none, is a candidate.
+  const plain = (m, start) => {
+    for (let k = m[0].length; k > 0; k--) {
+      let token = m[0].slice(0, k);
+      let line = null;
+      const withLine = /^(.*?):(\d+)(?:-\d+)?$/.exec(token);
+      if (withLine) {
+        token = withLine[1];
+        line = Number(withLine[2]);
+      }
+      token = token.replace(/:+$/, "");
+      if (prefix && token.startsWith(prefix)) token = token.slice(prefix.length);
+      token = token.replace(/^\.\//, "");
+      if (token && fileSet.has(token)) hits.push({ file: token, line, start, end: m.index + k, also: [] });
+      if (!/[.,;)]$/.test(m[0].slice(0, k))) break;
     }
-    token = token.replace(/:+$/, "");
-    if (prefix && token.startsWith(prefix)) token = token.slice(prefix.length);
-    token = token.replace(/^\.\//, "");
-    if (!token || !fileSet.has(token)) continue;
-    hits.push({ file: token, line, end: m.index + m[0].length });
+  };
+  for (const m of text.matchAll(TOKEN)) plain(m, m.index);
+  if (prefix && !PLAIN_NAME.test(prefix)) {
+    for (let p = text.indexOf(prefix); p !== -1; p = text.indexOf(prefix, p + 1)) {
+      if (p > 0 && PATH_CHAR.test(text[p - 1])) continue;
+      const sticky = new RegExp(TOKEN.source, "y");
+      sticky.lastIndex = p + prefix.length;
+      const m = sticky.exec(text);
+      if (m) plain(m, p);
+    }
   }
-  hits.forEach((h, i) => {
+  for (const name of oddNamesOf(fileSet)) {
+    // The same name without its space at the start, the end, or both: text that fits this name fits it too.
+    const twins = [...new Set([name.trimStart(), name.trimEnd(), name.trim()])].filter((t) => t !== name && fileSet.has(t));
+    for (let i = text.indexOf(name); i !== -1; i = text.indexOf(name, i + 1)) {
+      const start = leadIn(i);
+      const f = fit(start, i, name);
+      if (f) hits.push({ file: name, line: f.line, start, end: f.end, also: twins });
+    }
+  }
+  hits.sort((a, b) => a.start - b.start || a.end - b.end);
+  const found = [];
+  for (const h of hits) {
     let line = h.line;
     if (line === null) {
-      // "Dockerfile builds on ... — line 1 FROM": a line given in words, before the next file named.
-      const until = i + 1 < hits.length ? hits[i + 1].end : text.length;
+      // "Dockerfile builds on ... — line 1 FROM": a line given in words, before the next name that starts
+      // after this one ends (one that overlaps this one names the same place).
+      const until = Math.min(text.length, ...hits.filter((g) => g.start >= h.end).map((g) => g.start));
       const after = text.slice(h.end, Math.min(until, h.end + 120));
       const words = /\bline (\d+)\b/.exec(after);
       if (words) line = Number(words[1]);
     }
-    if (!found.some((f) => f.file === h.file && f.line === line)) found.push({ file: h.file, line });
-  });
+    for (const file of [h.file, ...h.also]) if (!found.some((f) => f.file === file && f.line === line)) found.push({ file, line });
+  }
   // A file named once with a line and once without: the line says more.
   return found.filter((f) => f.line !== null || !found.some((g) => g.file === f.file && g.line !== null));
 }
@@ -233,10 +321,24 @@ function firstLine(message, max = 320) {
   return one.length > max ? one.slice(0, max - 1) + "…" : one;
 }
 
+/**
+ * Text in a code span. A file name is the pull request's to pick: a backtick in it gets a longer fence,
+ * and a control character, a newline that would end the list and could close the <details> included,
+ * is written as an escape.
+ */
+export function code(s) {
+  const t = String(s).replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+  const run = Math.max(0, ...[...t.matchAll(/`+/g)].map((m) => m[0].length));
+  // CommonMark drops one space from each end of a span that has both; a padding space keeps the name's.
+  const pad = run || (/^ /.test(t) && / $/.test(t)) ? " " : "";
+  const fence = "`".repeat(run + 1);
+  return `${fence}${pad}${t}${pad}${fence}`;
+}
+
 function where(f, group) {
-  const locs = f.locations.filter((l) => l.group === group).map((l) => `\`${l.file}${l.line ? `:${l.line}` : ""}\``);
+  const locs = f.locations.filter((l) => l.group === group).map((l) => code(`${l.file}${l.line ? `:${l.line}` : ""}`));
   if (locs.length) return ` — ${locs.slice(0, 6).join(", ")}${locs.length > 6 ? `, +${locs.length - 6} more` : ""}`;
-  if (f.related.length) return ` — related: this change edits ${f.related.slice(0, 3).map((r) => `\`${r}\``).join(", ")}`;
+  if (f.related.length) return ` — related: this change edits ${f.related.slice(0, 3).map(code).join(", ")}`;
   return "";
 }
 
@@ -309,7 +411,7 @@ export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
     if (c.posted) out.push("", `It posted ${c.posted} inline comment(s) before it stopped.`);
   } else out.push("Not run.");
   if (c.offDiff?.length) {
-    out.push("", `⚠️ ${c.offDiff.length} comment(s) landed on lines this change did not modify: ${c.offDiff.map((o) => `\`${o.path}:${o.line}\``).join(", ")}. Please report this to wolfproof-review.`);
+    out.push("", `⚠️ ${c.offDiff.length} comment(s) landed on lines this change did not modify: ${c.offDiff.map((o) => code(`${o.path}:${o.line}`)).join(", ")}. Please report this to wolfproof-review.`);
   }
   out.push("", `<sub>[wolfproof-review](https://github.com/tjwitko/wolfproof-review) ${m.reviewVersion || ""} · rules from wolfproof's checks.md</sub>`);
 

@@ -59,8 +59,9 @@ const readJson = (f) => {
 };
 const readText = (f) => (f && existsSync(f) ? readFileSync(f, "utf8") : "");
 const lines = (s) => String(s).split("\n").map((l) => l.trim()).filter(Boolean);
-// git ls-files' output, one path per line. Not trimmed: a space can be part of a name.
-const pathLines = (s) => String(s).split("\n").filter(Boolean);
+// git ls-files -z's output: names as they are, each ended by a NUL, so a space, a quote or a newline
+// can be part of one. A list with no NUL in it is one name per line. Never trimmed.
+const pathLines = (s) => String(s).split(String(s).includes("\0") ? "\0" : "\n").filter(Boolean);
 
 function sort(o) {
   need(o, "diff", "files", "out");
@@ -284,7 +285,7 @@ function local(o) {
 
   // The working tree against the merge base: committed and uncommitted changes to tracked files.
   writeFileSync(f("diff.patch"), localDiff(cwd, mergeBase));
-  writeFileSync(f("files.txt"), git(["-c", "core.quotePath=false", "ls-files"], cwd));
+  writeFileSync(f("files.txt"), git(["ls-files", "-z"], cwd));
 
   let resultFile = null;
   let scanNote = "";

@@ -149,6 +149,10 @@ test("the review job computes the diff from the pull request's commits, and ever
     return m[1];
   };
   assert.equal(cmd(c, 'git -C "\\$d"', "\\$RUNNER_TEMP"), cmd(scan, "git", "\\$out"));
+  // The file list: names as they are, NUL-ended, in both jobs (a quoted name matches no file).
+  assert.match(scan, /^ *git ls-files -z > "\$out\/files\.txt"$/m);
+  assert.match(c, /^ *git -C "\$d" ls-files -z > "\$RUNNER_TEMP\/files\.txt"$/m);
+  assert.match(read("plugins/wolfproof-review/scripts/review.mjs"), /git\(\["ls-files", "-z"\], cwd\)/);
   // Every reader takes $IN/diff.patch, which is now this job's own.
   assert.match(step("Sort the findings"), /--diff "\$IN\/diff\.patch" --files "\$IN\/files\.txt"/);
   assert.match(step("Build the prompt"), /--diff "\$IN\/diff\.patch"/);
