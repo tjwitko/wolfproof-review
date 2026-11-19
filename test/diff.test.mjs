@@ -3,13 +3,13 @@
 // the content of its lines and its .gitattributes.
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { parseDiff, onChangedLine, changedFromPatches, diffDisagreement, offDiff } from "../plugins/wolfproof-review/scripts/lib.mjs";
+import { parseDiff, onChangedLine, changedFromPatches, diffDisagreement, offDiff, sortFindings } from "../plugins/wolfproof-review/scripts/lib.mjs";
 import { makeTools } from "../plugins/wolfproof-review/scripts/agent.mjs";
 
 const workflow = readFileSync(new URL("../.github/workflows/review.yml", import.meta.url), "utf8");
@@ -154,4 +154,64 @@ test("changedFromPatches: only + lines count; a file without a patch cannot be c
   // Where the two diffs part, the check's log says so.
   const ours = parseDiff(["diff --git a/a.py b/a.py", "--- a/a.py", "+++ b/a.py", "@@ -2 +2,2 @@", "-old", "+new", "+newer"].join("\n"));
   assert.deepEqual(diffDisagreement(ours, changed, unknown), ["a.py"]);
+});
+
+// Names git writes with a tab after them ("+++ b/victim.py \t"), built here so no such file sits in
+// this repository.
+const TRAILING = "victim.py" + " ";
+const INSIDE = ["sp", "ace.py"].join(" ");
+const LEADING = " " + "lead.py";
+
+test("a new file whose name ends in a space keeps its own lines, not the unchanged file it resembles", async () => {
+  const diff = diffOf({ "victim.py": lines(30) }, { [TRAILING]: lines(25) });
+  assert.ok(diff.includes(`+++ b/${TRAILING}\t\n`), "git ends the header with a tab");
+  const d = parseDiff(diff);
+  assert.deepEqual([...d.keys()], [TRAILING]);
+  assert.deepEqual(d.get(TRAILING).ranges, [[1, 25]]);
+  assert.ok(!onChangedLine(d, "victim.py", 20));
+
+  const wrong = await comment(diff, { path: "victim.py", line: 20, body: "x" });
+  assert.equal(wrong.isError, true);
+  assert.match(wrong.content, /not a line this change added or modified/);
+  assert.equal((await comment(diff, { path: TRAILING, line: 20, body: "x" })).isError, false);
+
+  // A scanner finding on the unchanged file is not sorted as on the change.
+  const result = { exitCode: 1, findings: [{ severity: "blocking", message: "sast: SQL injection — victim.py:20" }] };
+  const s = sortFindings({ result, diff, files: ["victim.py", TRAILING] });
+  assert.equal(s.findings[0].group, "elsewhere");
+  assert.deepEqual(s.change.changedFiles, [TRAILING]);
+});
+
+test("a name with a space inside it gets its lines", async () => {
+  const diff = diffOf({ "keep.py": lines(3) }, { [INSIDE]: lines(4) });
+  const d = parseDiff(diff);
+  assert.deepEqual([...d.keys()], [INSIDE]);
+  assert.deepEqual(d.get(INSIDE).ranges, [[1, 4]]);
+  assert.equal((await comment(diff, { path: INSIDE, line: 2, body: "x" })).isError, false);
+});
+
+test("a name with a leading space gets its lines, and the file list keeps the space", async () => {
+  const diff = diffOf({ "keep.py": lines(3) }, { [LEADING]: lines(2) });
+  const d = parseDiff(diff);
+  assert.deepEqual([...d.keys()], [LEADING]);
+  assert.deepEqual(d.get(LEADING).ranges, [[1, 2]]);
+  assert.equal((await comment(diff, { path: LEADING, line: 1, body: "x" })).isError, false);
+  assert.equal((await comment(diff, { path: "lead.py", line: 1, body: "x" })).isError, true);
+
+  // review.mjs sort reads files.txt as git ls-files writes it: " lead.py" is not "lead.py".
+  const dir = mkdtempSync(path.join(os.tmpdir(), "wr-sort-"));
+  try {
+    const at = (n) => path.join(dir, n);
+    writeFileSync(at("diff.patch"), diff);
+    writeFileSync(at("files.txt"), `keep.py\n${LEADING}\n`);
+    writeFileSync(at("result.json"), JSON.stringify({ exitCode: 1, findings: [{ severity: "blocking", message: "sast: SQL injection — lead.py:1" }] }));
+    const cli = new URL("../plugins/wolfproof-review/scripts/review.mjs", import.meta.url).pathname;
+    const r = spawnSync(process.execPath, [cli, "sort", "--result", at("result.json"), "--diff", at("diff.patch"), "--files", at("files.txt"), "--out", at("sorted.json")], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const sorted = JSON.parse(readFileSync(at("sorted.json"), "utf8"));
+    assert.deepEqual(sorted.change.changedFiles, [LEADING]);
+    assert.deepEqual(sorted.findings[0].locations, [], "lead.py is not a file of this repository");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

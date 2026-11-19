@@ -44,7 +44,10 @@ export function parseDiff(text) {
       continue;
     }
     if (line.startsWith("+++ ")) {
-      const target = line.slice(4).trim();
+      // git ends the header with one tab when the name has a space in it ("+++ b/sp ace.py\t"), and
+      // quotes a name that has a tab of its own. Strip only that tab: a space can be part of the name,
+      // and "victim.py " is a different file from "victim.py".
+      const target = line.slice(4).replace(/\t$/, "");
       if (target === "/dev/null") {
         current = null; // a deleted file has no new lines
         continue;
