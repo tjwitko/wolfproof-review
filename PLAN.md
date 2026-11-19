@@ -33,14 +33,14 @@ Two jobs, so the job that runs the project's code never holds the API key.
 
 2. **review** — `REVIEW_API_KEY`, `contents: read`, `pull-requests: write`. Runs no project code.
    - Downloads the artifact.
-   - `scripts/sort-findings.mjs` sorts every finding into three groups: **on a changed line**, **in a
-     changed file**, and **already there**. Deterministic, no AI.
-   - `scripts/summary.mjs` posts one summary comment from that sort, updated in place on each push:
+   - `review.mjs sort` sorts every finding into three groups: **on a changed line**, **in a changed
+     file**, and **already there**. Deterministic, no AI.
+   - `review.mjs summary` posts one summary comment from that sort, updated in place on each push:
      counts by check, the changed-line findings in full, the rest collapsed.
-   - `scripts/review.mjs run` runs the `wolfproof-reviewer` agent from this repository's plugin, as
-     plain API calls to the provider the team chose: Anthropic, or any OpenAI-compatible endpoint. The
-     model gets the sorted findings, the diff and the rulebook, and posts inline
-     comments with `mcp__github_inline_comment__create_inline_comment`.
+   - `review.mjs run` runs the `wolfproof-reviewer` agent from this repository's plugin, as plain API
+     calls to the provider the team chose: Anthropic, or any OpenAI-compatible endpoint. The model
+     gets the sorted findings, the diff and the rulebook, and posts inline comments with its
+     `create_inline_comment` tool, which takes only lines the change added or modified.
 
 **The model can add to the scanners' findings but cannot remove them.** The summary is written by a
 script, so a pull request that talks the model out of a finding (prompt injection in a comment or a
@@ -80,10 +80,16 @@ wolfproof-review/
     agents/wolfproof-reviewer.md           the prompt, the only copy
     commands/wolfproof-review.md           local use: /wolfproof-review [base-branch]
     rulebook/checks.md                     wolfproof's docs/checks.md at the pinned tag
+    hooks/hooks.json                       local use: the pull-request hook (scripts/pr-hook.mjs)
+    scripts/review.mjs                     the CLI: sort, prompt, existing, run, check, summary, local
+    scripts/lib.mjs                        the sort, the summary and the prompt; no network
+    scripts/agent.mjs                      the review loop and its four tools
+    scripts/providers.mjs                  the Anthropic and OpenAI-compatible adapters
+    scripts/github.mjs                     GitHub's API: comments and the pull request's files
   .github/workflows/review.yml             the reusable workflow teams call (on: workflow_call)
-  .github/workflows/ci.yml                 tests, rulebook check, a smoke review on a fixture PR
-  scripts/sort-findings.mjs
-  scripts/summary.mjs
+  .github/workflows/ci.yml                 tests, actionlint, and the rulebook check
+  .github/workflows/self-review.yml        this repository's own pull requests, at their own version
+  scripts/pin-wolfproof.mjs                the pin step a wolfproof release runs here
   test/
   README.md
 ```
@@ -103,7 +109,7 @@ permissions:
   pull-requests: write
 jobs:
   review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v1
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@vX.Y.Z # the current release: see the README
     secrets:
       REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
@@ -170,7 +176,7 @@ hold.
 *Exit:* the targets below on two legacy repositories.
 
 **Phase 3: exact matching, after wolfproof #36.** Once the gate's JSON gives every finding an ID and a
-file and line, and a project can snapshot its existing findings, `sort-findings.mjs` uses those instead
+file and line, and a project can snapshot its existing findings, `review.mjs sort` uses those instead
 of reading messages. Then, and not before, the opt-in `fail-on: new-blocking`: fail only on a blocking
 finding that is not in the snapshot. In factory mode #36 refuses snapshot entries a change added
 itself, and the reviewer relies on that.
