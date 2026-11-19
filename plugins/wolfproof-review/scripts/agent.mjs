@@ -182,7 +182,11 @@ export function makeTools({ cwd, roots, codeRoot, changed, maxComments, post }) 
     glob({ pattern, path: p }) {
       const start = p ? resolve(p) : { rp: code.real, shown: code.name, isDir: true };
       if (!start.isDir) throw new ToolError(`${start.shown}: not a folder`);
-      const re = globToRegExp(pattern);
+      // The pattern is the model's, so it is kept to a shape the regular expression runs fast on:
+      // repeated **/ collapse to one, and long or wildcard-heavy patterns are refused.
+      const g = pattern.replace(/(?:\*\*\/)+/g, "**/").replace(/\*{3,}/g, "**");
+      if (g.length > 200 || (g.match(/[*?]/g) || []).length > 10) throw new ToolError("the pattern is too long or has too many wildcards; use a simpler one");
+      const re = globToRegExp(g);
       const out = [];
       let seen = 0;
       const walk = (dir, rel) => {

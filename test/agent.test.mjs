@@ -377,3 +377,22 @@ test("runReview redacts the key from any error it records, not only HTTP errors"
     w.done();
   }
 });
+
+test("glob keeps a model's pattern from backtracking for ever", async () => {
+  const w = workspace();
+  try {
+    let dir = path.join(w.work, "pr-head");
+    for (let i = 0; i < 40; i++) mkdirSync((dir = path.join(dir, "d")));
+    writeFileSync(path.join(dir, "y.txt"), "");
+    const { t } = tools(w.work);
+    const started = Date.now();
+    const r = await t.run("glob", { pattern: `${"**/".repeat(30)}x` });
+    assert.ok(Date.now() - started < 2000, "returns quickly");
+    assert.equal(r.content, "no files match");
+    assert.match((await t.run("glob", { pattern: "*a*b*c*d*e*f*g*h*i*j*k*" })).content, /too many wildcards/);
+    assert.match((await t.run("glob", { pattern: "a".repeat(201) })).content, /too long/);
+    assert.match((await t.run("glob", { pattern: "**/**/*.py" })).content, /^pr-head\/app\/views\.py$/);
+  } finally {
+    w.done();
+  }
+});
