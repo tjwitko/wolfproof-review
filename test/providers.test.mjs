@@ -141,4 +141,6 @@ test("redactKey removes the key and any long piece of it, and leaves other text"
   assert.equal(redactKey("head sk-abcde", "sk-abcdefghijkl"), "head [redacted]");
   assert.equal(redactKey("piece cdefghij here", "sk-abcdefghijkl"), "piece [redacted] here");
   assert.equal(redactKey("nothing", ""), "nothing");
+  assert.equal(redactKey("max_tokens", "k"), "max_tokens");
+  assert.equal(redactKey("a short abc12 key", "abc12"), "a short [redacted] key");
 });

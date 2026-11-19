@@ -87,6 +87,8 @@ class ToolError extends Error {}
  * @param {(c: {path: string, line: number, start_line?: number, body: string}) => Promise<void>} o.post
  */
 export function makeTools({ cwd, roots, codeRoot, changed, maxComments, post }) {
+  // The cap holds whatever the caller passed: NaN would make it no cap at all.
+  if (!Number.isInteger(maxComments) || maxComments < 1) throw new Error("max-comments is a whole number of at least 1");
   const real = roots.map((r) => ({ name: r.name, real: realpathSync(path.resolve(cwd, r.dir)) }));
   const code = real.find((r) => r.name === codeRoot);
   const stats = { posted: 0, rejected: { offDiff: 0, overLimit: 0, badPath: 0 } };
@@ -280,7 +282,8 @@ export async function runReview({ adapter, prompt, tools, maxTurns = 60, deadlin
       messages.push(...adapter.results(results));
     }
   } catch (err) {
-    out.error = logSafe(err.message);
+    // Every error, not only the provider's HTTP errors, goes to run.json and the public summary.
+    out.error = logSafe(adapter.redact ? adapter.redact(err.message) : err.message);
   }
   Object.assign(out, tools.stats);
   return out;

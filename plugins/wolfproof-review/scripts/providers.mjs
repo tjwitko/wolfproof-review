@@ -112,8 +112,10 @@ function openai(apiKey, model, base) {
 /** The text with the key, and every run of 8 or more characters taken from it, replaced. */
 export function redactKey(text, key) {
   const t = String(text).slice(0, 2000);
-  if (!key) return t;
-  const n = Math.min(8, key.length);
+  // Real keys are far longer; a very short one would match ordinary words.
+  if (!key || key.length < 4) return t;
+  if (key.length < 8) return t.split(key).join("[redacted]");
+  const n = 8;
   const hit = new Array(t.length).fill(false);
   for (let i = 0; i + n <= t.length; i++) if (key.includes(t.slice(i, i + n))) hit.fill(true, i, i + n);
   let out = "";
@@ -157,7 +159,16 @@ export async function send(a, messages, tools, { fetchImpl = fetch, sleep = (ms)
       }
       throw new ProviderError(`the request to ${a.provider} failed (${err.name === "TimeoutError" ? "timed out" : err.name || "network error"})`);
     }
-    if (res.ok) return a.parse(await res.json());
+    if (res.ok) {
+      let json;
+      try {
+        json = await res.json();
+      } catch {
+        // A parse error quotes the body, which a gateway could fill with anything, the key included.
+        throw new ProviderError(`${a.provider}'s response was not valid JSON`, res.status);
+      }
+      return a.parse(json);
+    }
     // A 401 or 403 body can echo part of the key ("Incorrect API key provided: sk-…abcd").
     if (res.status === 401 || res.status === 403) throw new ProviderError(`${a.provider} rejected the API key (${res.status})`, res.status);
     const message = (a.redact || String)(errorMessage(await res.text()));

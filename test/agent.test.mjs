@@ -348,3 +348,32 @@ test("runReview: a reply that was cut off or refused fails the run instead of en
     w.done();
   }
 });
+
+test("makeTools refuses a comment limit that is not a whole number of at least 1", () => {
+  const w = workspace();
+  try {
+    for (const maxComments of [NaN, 0, -1, 2.5, "15"]) assert.throws(() => tools(w.work, { maxComments }), /max-comments is a whole number/, String(maxComments));
+  } finally {
+    w.done();
+  }
+});
+
+test("runReview redacts the key from any error it records, not only HTTP errors", async () => {
+  const w = workspace();
+  try {
+    const { t } = tools(w.work);
+    const key = ["sk", "live", "abcdefgh12345678"].join("-");
+    const a = adapter({ provider: "openai", apiKey: key, model: "m" });
+    const echo = async () => {
+      throw new Error(`proxy said: Authorization: Bearer ${key}`);
+    };
+    const out = await runReview({ adapter: a, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: echo, sleep: async () => {}, retries: 0 } });
+    assert.equal(out.status, "failed");
+    assert.doesNotMatch(out.error, /abcdefgh|12345678/);
+    const notJson = { ok: true, status: 200, headers: { get: () => null }, json: async () => JSON.parse(`<html>${key}</html>`), text: async () => "" };
+    const bad = await runReview({ adapter: a, prompt: "p", tools: t, log: () => {}, sendOptions: { fetchImpl: async () => notJson } });
+    assert.equal(bad.error, "openai's response was not valid JSON");
+  } finally {
+    w.done();
+  }
+});
