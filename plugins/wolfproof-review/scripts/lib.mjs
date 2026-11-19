@@ -151,15 +151,36 @@ function oddNamesOf(fileSet) {
  *
  * Where two names overlap, the longer wins: in "x ace.py:20" the file is "x ace.py", not ace.py, when
  * both exist. A pull request picks its own file names, so one must not be able to move its findings
- * onto an unchanged file by naming itself after part of one.
+ * onto an unchanged file by naming itself after part of one. The project's root may lead a name
+ * ("/work/p/app.py:3") and counts in its match; the message itself is never rewritten, so a folder
+ * that repeats the root's path stays part of the name it is in.
+ *
+ * A space at either end of a name is also the space between words, so text that fits both "app.py "
+ * and app.py names both, and the sort takes the better-placed one. Text that fits only app.py
+ * ("(app.py:20)") names only app.py.
  */
 export function locationsIn(message, fileSet, root = "") {
+  const text = String(message || "");
   const prefix = root ? root.replace(/\/+$/, "") + "/" : "";
-  // The project's own absolute paths, as repository paths; a root with a space in it included.
-  const text = prefix ? String(message || "").split(prefix).join("") : String(message || "");
-  const found = [];
   const hits = [];
-  for (const m of text.matchAll(TOKEN)) {
+  // A name at `at`, its lead-in (the root or "./") starting at `start`: its line, and where it ends,
+  // or null when a path character runs on into the name from either side.
+  const fit = (start, at, name) => {
+    if (start > 0 && PATH_CHAR.test(text[start - 1])) return null;
+    const lineRef = /^:(\d+)(?:-\d+)?/.exec(text.slice(at + name.length));
+    const end = at + name.length + (lineRef ? lineRef[0].length : 0);
+    const next = text.slice(end).replace(/^[.,;)]+/, "")[0];
+    if (next !== undefined && PATH_CHAR.test(next)) return null;
+    return { line: lineRef ? Number(lineRef[1]) : null, end };
+  };
+  const leadIn = (at) =>
+    prefix && text.startsWith(prefix, at - prefix.length) && !(at - prefix.length > 0 && PATH_CHAR.test(text[at - prefix.length - 1]))
+      ? at - prefix.length
+      : text.startsWith("./", at - 2)
+        ? at - 2
+        : at;
+  // A plain name is one token. Its lead-in is part of the token unless the root has a blank in it.
+  const plain = (m, start) => {
     let token = m[0].replace(/[.,;)]+$/, "");
     let line = null;
     const withLine = /^(.*?):(\d+)(?:-\d+)?$/.exec(token);
@@ -167,24 +188,28 @@ export function locationsIn(message, fileSet, root = "") {
       token = withLine[1];
       line = Number(withLine[2]);
     }
-    token = token.replace(/:+$/, "").replace(/^\.\//, "");
-    if (!token || !fileSet.has(token)) continue;
-    hits.push({ file: token, line, start: m.index, end: m.index + m[0].length });
+    token = token.replace(/:+$/, "");
+    if (prefix && token.startsWith(prefix)) token = token.slice(prefix.length);
+    token = token.replace(/^\.\//, "");
+    if (token && fileSet.has(token)) hits.push({ file: token, line, start, end: m.index + m[0].length, also: [] });
+  };
+  for (const m of text.matchAll(TOKEN)) plain(m, m.index);
+  if (prefix && !PLAIN_NAME.test(prefix)) {
+    for (let p = text.indexOf(prefix); p !== -1; p = text.indexOf(prefix, p + 1)) {
+      if (p > 0 && PATH_CHAR.test(text[p - 1])) continue;
+      const sticky = new RegExp(TOKEN.source, "y");
+      sticky.lastIndex = p + prefix.length;
+      const m = sticky.exec(text);
+      if (m) plain(m, p);
+    }
   }
   for (const name of oddNamesOf(fileSet)) {
+    // The same name without its space at the start, the end, or both: text that fits this name fits it too.
+    const twins = [...new Set([name.trimStart(), name.trimEnd(), name.trim()])].filter((t) => t !== name && fileSet.has(t));
     for (let i = text.indexOf(name); i !== -1; i = text.indexOf(name, i + 1)) {
-      const start = text.startsWith("./", i - 2) ? i - 2 : i;
-      if (start > 0 && PATH_CHAR.test(text[start - 1])) continue;
-      const lineRef = /^:(\d+)(?:-\d+)?/.exec(text.slice(i + name.length));
-      const end = i + name.length + (lineRef ? lineRef[0].length : 0);
-      const next = text.slice(end).replace(/^[.,;)]+/, "")[0];
-      if (next !== undefined && PATH_CHAR.test(next)) continue;
-      // A space at the end of a name is also the space between words. When the name without it is a file
-      // too, the space counts only where the text sets it apart: a line number right after a trailing
-      // space ("victim.py :20"), another blank or a ./ before a leading one ("—  lead.py").
-      if (/\s$/.test(name) && fileSet.has(name.trimEnd()) && !lineRef && !/^\s/.test(text.slice(end))) continue;
-      if (/^\s/.test(name) && fileSet.has(name.trimStart()) && start === i && !(i > 0 && /\s/.test(text[i - 1]))) continue;
-      hits.push({ file: name, line: lineRef ? Number(lineRef[1]) : null, start, end });
+      const start = leadIn(i);
+      const f = fit(start, i, name);
+      if (f) hits.push({ file: name, line: f.line, start, end: f.end, also: twins });
     }
   }
   const chosen = [];
@@ -192,6 +217,7 @@ export function locationsIn(message, fileSet, root = "") {
     if (!chosen.some((c) => h.start < c.end && c.start < h.end)) chosen.push(h);
   }
   chosen.sort((a, b) => a.start - b.start);
+  const found = [];
   chosen.forEach((h, i) => {
     let line = h.line;
     if (line === null) {
@@ -201,7 +227,7 @@ export function locationsIn(message, fileSet, root = "") {
       const words = /\bline (\d+)\b/.exec(after);
       if (words) line = Number(words[1]);
     }
-    if (!found.some((f) => f.file === h.file && f.line === line)) found.push({ file: h.file, line });
+    for (const file of [h.file, ...h.also]) if (!found.some((f) => f.file === file && f.line === line)) found.push({ file, line });
   });
   // A file named once with a line and once without: the line says more.
   return found.filter((f) => f.line !== null || !found.some((g) => g.file === f.file && g.line !== null));

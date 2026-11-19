@@ -270,23 +270,73 @@ test("beside an unchanged ace.py, x ace.py:20 is the new file's line, and ace.py
   assert.deepEqual(where(findings[1]), ["elsewhere", [["ace.py", 20, "elsewhere"]]]);
 });
 
-test("a space at either end of a name counts where the message sets it apart, and the unchanged twin stays elsewhere", () => {
+test("text that fits a name with a space at either end and its unchanged twin names both, so the finding stays with the change", () => {
   const { findings } = sortedIn(
     { "victim.py": lines(30), "lead.py": lines(30) },
     { [TRAILING]: lines(25), [LEADING]: lines(25) },
     [
       `sast: SQL injection — ${TRAILING}:20`, // "victim.py :20"
-      "sast: SQL injection — victim.py:20",
       "sast: SQL injection — victim.py — line 20",
       `sast: SQL injection —  ${LEADING.trimStart()}:20`, // two spaces: the separator and the name's own
-      "sast: SQL injection — lead.py:20",
+      "sast: SQL injection — lead.py:20", // the separator's space is also where " lead.py" starts
+      "sast: SQL injection — victim.py:20",
+      "sast: SQL injection (lead.py:20)",
     ]
   );
-  assert.deepEqual(where(findings[0]), ["changed-line", [[TRAILING, 20, "changed-line"]]]);
-  assert.deepEqual(where(findings[1]), ["elsewhere", [["victim.py", 20, "elsewhere"]]]);
-  assert.deepEqual(where(findings[2]), ["elsewhere", [["victim.py", 20, "elsewhere"]]]);
-  assert.deepEqual(where(findings[3]), ["changed-line", [[LEADING, 20, "changed-line"]]]);
-  assert.deepEqual(where(findings[4]), ["elsewhere", [["lead.py", 20, "elsewhere"]]]);
+  const both = (spaced, plain) => ["changed-line", [[spaced, 20, "changed-line"], [plain, 20, "elsewhere"]]];
+  assert.deepEqual(where(findings[0]), both(TRAILING, "victim.py"));
+  assert.deepEqual(where(findings[1]), both(TRAILING, "victim.py"));
+  assert.deepEqual(where(findings[2]), both(LEADING, "lead.py"));
+  assert.deepEqual(where(findings[3]), both(LEADING, "lead.py"));
+  // Text that fits only the plain name: the unchanged file alone.
+  assert.deepEqual(where(findings[4]), ["elsewhere", [["victim.py", 20, "elsewhere"]]]);
+  assert.deepEqual(where(findings[5]), ["elsewhere", [["lead.py", 20, "elsewhere"]]]);
+});
+
+// wolfproof's own message shapes, with the name of a new file that is an unchanged one plus a space.
+const shapes = (f) => [
+  [`sast: SQL injection (${f}:20)`, 20],
+  [`checkov (${f}): 3 finding(s)`, null],
+  [`secret-guard: ${f}: aws-access-key-id`, null],
+  [`workload identity: ${f}. It hides a credential`, null],
+  [`terraform: terraform_plan(${f}) failed`, null],
+];
+
+for (const [label, spaced] of [["ends", "app.py" + " "], ["starts", " " + "app.py"]]) {
+  test(`each of wolfproof's message shapes sorts with the change for a new file whose name ${label} with a space, beside an unchanged app.py`, () => {
+    const cases = shapes(spaced);
+    // Text that fits only the plain name, with no space next to it, still names only the unchanged file.
+    const plainOnly = ["sast: SQL injection (app.py:20)", "sast: SQL injection —app.py:20"];
+    const { findings } = sortedIn({ "app.py": lines(30) }, { [spaced]: lines(25) }, [...cases.map(([m]) => m), ...plainOnly]);
+    for (const [i, [m, line]] of cases.entries()) {
+      const group = line ? "changed-line" : "changed-file";
+      assert.deepEqual(where(findings[i]), [group, [[spaced, line, group], ["app.py", line, "elsewhere"]]], m);
+    }
+    for (const [i] of plainOnly.entries()) {
+      assert.deepEqual(where(findings[cases.length + i]), ["elsewhere", [["app.py", 20, "elsewhere"]]], plainOnly[i]);
+    }
+  });
+}
+
+test("the project root leads a name but never cuts one: a folder that repeats it stays part of the file's name", () => {
+  // The runner's workspace, repeated inside the pull request's own tree; with and without an unchanged
+  // ab.py that cutting it out would leave.
+  const R = "/home/runner/work/repo/repo";
+  const nested = ["a", R.slice(1), "b.py"].join("/");
+  for (const base of [{ "ab.py": lines(30) }, { "keep.py": lines(3) }]) {
+    const { findings } = sortedIn(base, { [nested]: lines(25) }, [`sast: SQL injection — ${nested}:20`, `sast: SQL injection — ${R}/${nested}:20`], { root: R });
+    for (const f of findings) assert.deepEqual(where(f), ["changed-line", [[nested, 20, "changed-line"]]], f.message);
+  }
+  // A relative root: "repo" inside my-repo/new.py is not the root, with or without an unchanged my-new.py.
+  for (const base of [{ "my-new.py": lines(30) }, { "keep.py": lines(3) }]) {
+    const { findings } = sortedIn(base, { "my-repo/new.py": lines(25) }, ["sast: SQL injection — my-repo/new.py:20", "sast: SQL injection — repo/my-repo/new.py:20"], { root: "repo" });
+    for (const f of findings) assert.deepEqual(where(f), ["changed-line", [["my-repo/new.py", 20, "changed-line"]]], f.message);
+  }
+  // A root with a space in it still leads both a plain name and one with a space.
+  const spacedRoot = "/work/My Repo";
+  const { findings } = sortedIn({ "keep.py": lines(3) }, { "app.py": lines(25), [XACE]: lines(25) }, [`sast: x — ${spacedRoot}/app.py:20`, `sast: x — ${spacedRoot}/${XACE}:20`], { root: spacedRoot });
+  assert.deepEqual(where(findings[0]), ["changed-line", [["app.py", 20, "changed-line"]]]);
+  assert.deepEqual(where(findings[1]), ["changed-line", [[XACE, 20, "changed-line"]]]);
 });
 
 test("names git quotes (a tab, a double quote, a backslash, a newline) are read as the names they are", async () => {
