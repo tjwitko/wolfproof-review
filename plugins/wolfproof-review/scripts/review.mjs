@@ -233,6 +233,24 @@ function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
+// The working tree's diff against the merge base, with attributes from an empty tree as in CI, so a
+// "-diff" or "binary" in .gitattributes still shows the lines. git before 2.40 has no --attr-source;
+// there the diff runs without it, and says what that can hide.
+function localDiff(cwd, mergeBase) {
+  const args = ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", mergeBase];
+  const noattr = git(["hash-object", "-t", "tree", "/dev/null"], cwd).trim();
+  const r = spawnSync("git", [`--attr-source=${noattr}`, ...args], { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  if (r.status === 0) return r.stdout;
+  if (/unknown option:? ['"]?--attr-source/i.test(r.stderr || "")) {
+    console.log(
+      "note: this git has no --attr-source (it came in git 2.40), so the diff follows .gitattributes: " +
+        'a file marked "-diff" or "binary" shows no changed lines, and its findings are not on the change. Update git to review those lines.'
+    );
+    return git(args, cwd);
+  }
+  throw new Error(`git diff failed: ${String(r.error?.message || r.stderr || `exit ${r.status}`).trim().slice(0, 300)}`);
+}
+
 function defaultBase(cwd) {
   try {
     return git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd).trim();
@@ -263,9 +281,7 @@ function local(o) {
   const f = (n) => path.join(dir, n);
 
   // The working tree against the merge base: committed and uncommitted changes to tracked files.
-  // Attributes from an empty tree, as in CI, so a "-diff" or "binary" in .gitattributes still shows the lines.
-  const noattr = git(["hash-object", "-t", "tree", "/dev/null"], cwd).trim();
-  writeFileSync(f("diff.patch"), git([`--attr-source=${noattr}`, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "-U0", "-M", mergeBase], cwd));
+  writeFileSync(f("diff.patch"), localDiff(cwd, mergeBase));
   writeFileSync(f("files.txt"), git(["-c", "core.quotePath=false", "ls-files"], cwd));
 
   let resultFile = null;
