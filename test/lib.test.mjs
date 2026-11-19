@@ -149,6 +149,18 @@ test("the summary cannot be closed or used to ping anyone by the text it quotes"
   assert.match(body, /&lt;\/details> @​someone/);
 });
 
+test("a file name in the summary stays inside its code span: spaces, backticks and newlines included", () => {
+  // The pull request picks its file names; one with a backtick or a newline must not close the span,
+  // end the list, or ping anyone.
+  const spaced = ["x", "ace.py"].join(" ");
+  const evil = ["a`@someone`", "</details>.py"].join("\n");
+  const r = { exitCode: 1, blocking: 2, findings: [{ severity: "blocking", message: `sast: x — ${spaced}:20` }, { severity: "blocking", message: `sast: y — ${evil}:1` }], advisories: [] };
+  const body = renderSummary(sortFindings({ result: r, diff: "", files: [spaced, evil] }), {});
+  assert.match(body, /`x ace\.py:20`/);
+  assert.ok(body.includes("`` a`@someone`\\x0a</details>.py:1 ``"), body);
+  assert.equal(body.split("\n").filter((l) => l === "</details>").length, 1, "only the summary's own </details> starts a line");
+});
+
 test("comments off the diff are caught, multi-line ones included", () => {
   const d = parseDiff(diff);
   const comments = [

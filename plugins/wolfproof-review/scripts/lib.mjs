@@ -68,10 +68,32 @@ export function parseDiff(text) {
   return files;
 }
 
-function unquote(p) {
-  // git quotes a path with unusual characters: "b/caf\303\251.js". Good enough to match plain names;
-  // a quoted one simply matches nothing, which puts its findings in "elsewhere", never on a line.
-  return p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
+// The escapes git writes in a quoted name (core.quotePath=false still quotes a tab, a newline, a double
+// quote, a backslash and other control characters), with \ooo for one byte of the name.
+const ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+/** A name as git writes it in a "+++ " header, quoted when it has to be: "b/t\tab.py" is b/<tab>ab.py. */
+export function unquote(p) {
+  if (!(p.length >= 2 && p.startsWith('"') && p.endsWith('"'))) return p;
+  // A backslash byte is never part of a multi-byte UTF-8 character, so the escapes can be read from the bytes.
+  const src = Buffer.from(p.slice(1, -1), "utf8");
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== 0x5c || i + 1 >= src.length) {
+      out.push(src[i]);
+      continue;
+    }
+    const oct = src.subarray(i + 1, i + 4).toString("latin1");
+    const next = String.fromCharCode(src[i + 1]);
+    if (/^[0-3][0-7]{2}$/.test(oct)) {
+      out.push(parseInt(oct, 8));
+      i += 3;
+    } else if (next in ESCAPES) {
+      out.push(ESCAPES[next]);
+      i += 1;
+    } else out.push(src[i]);
+  }
+  return Buffer.from(out).toString("utf8");
 }
 
 export function onChangedLine(changed, file, line) {
@@ -107,15 +129,34 @@ export function checkOf(message) {
   return m ? m[1] : "other";
 }
 
+const PATH_CHAR = /[A-Za-z0-9_@+.\/-]/;
 const TOKEN = /[A-Za-z0-9_@+.\/-]+(?::\d+(?:-\d+)?)?/g;
+const PLAIN_NAME = /^[A-Za-z0-9_@+.\/-]+$/;
+
+// The repository's names a token cannot hold whole (a space, a quote, a letter outside ASCII), longest
+// first, found by searching for each name itself. Kept per file set: sortFindings asks once per finding.
+const oddNames = new WeakMap();
+function oddNamesOf(fileSet) {
+  let list = oddNames.get(fileSet);
+  if (!list) {
+    list = [...fileSet].filter((f) => f && !PLAIN_NAME.test(f)).sort((a, b) => b.length - a.length);
+    oddNames.set(fileSet, list);
+  }
+  return list;
+}
 
 /**
  * The repository files a message names, with a line when it gives one. Only names that are files in
  * the repository count, so "0.0.0.0:0" or "node:20-alpine" are never read as locations.
+ *
+ * Where two names overlap, the longer wins: in "x ace.py:20" the file is "x ace.py", not ace.py, when
+ * both exist. A pull request picks its own file names, so one must not be able to move its findings
+ * onto an unchanged file by naming itself after part of one.
  */
 export function locationsIn(message, fileSet, root = "") {
-  const text = String(message || "");
   const prefix = root ? root.replace(/\/+$/, "") + "/" : "";
+  // The project's own absolute paths, as repository paths; a root with a space in it included.
+  const text = prefix ? String(message || "").split(prefix).join("") : String(message || "");
   const found = [];
   const hits = [];
   for (const m of text.matchAll(TOKEN)) {
@@ -126,17 +167,36 @@ export function locationsIn(message, fileSet, root = "") {
       token = withLine[1];
       line = Number(withLine[2]);
     }
-    token = token.replace(/:+$/, "");
-    if (prefix && token.startsWith(prefix)) token = token.slice(prefix.length);
-    token = token.replace(/^\.\//, "");
+    token = token.replace(/:+$/, "").replace(/^\.\//, "");
     if (!token || !fileSet.has(token)) continue;
-    hits.push({ file: token, line, end: m.index + m[0].length });
+    hits.push({ file: token, line, start: m.index, end: m.index + m[0].length });
   }
-  hits.forEach((h, i) => {
+  for (const name of oddNamesOf(fileSet)) {
+    for (let i = text.indexOf(name); i !== -1; i = text.indexOf(name, i + 1)) {
+      const start = text.startsWith("./", i - 2) ? i - 2 : i;
+      if (start > 0 && PATH_CHAR.test(text[start - 1])) continue;
+      const lineRef = /^:(\d+)(?:-\d+)?/.exec(text.slice(i + name.length));
+      const end = i + name.length + (lineRef ? lineRef[0].length : 0);
+      const next = text.slice(end).replace(/^[.,;)]+/, "")[0];
+      if (next !== undefined && PATH_CHAR.test(next)) continue;
+      // A space at the end of a name is also the space between words. When the name without it is a file
+      // too, the space counts only where the text sets it apart: a line number right after a trailing
+      // space ("victim.py :20"), another blank or a ./ before a leading one ("—  lead.py").
+      if (/\s$/.test(name) && fileSet.has(name.trimEnd()) && !lineRef && !/^\s/.test(text.slice(end))) continue;
+      if (/^\s/.test(name) && fileSet.has(name.trimStart()) && start === i && !(i > 0 && /\s/.test(text[i - 1]))) continue;
+      hits.push({ file: name, line: lineRef ? Number(lineRef[1]) : null, start, end });
+    }
+  }
+  const chosen = [];
+  for (const h of hits.sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start)) {
+    if (!chosen.some((c) => h.start < c.end && c.start < h.end)) chosen.push(h);
+  }
+  chosen.sort((a, b) => a.start - b.start);
+  chosen.forEach((h, i) => {
     let line = h.line;
     if (line === null) {
       // "Dockerfile builds on ... — line 1 FROM": a line given in words, before the next file named.
-      const until = i + 1 < hits.length ? hits[i + 1].end : text.length;
+      const until = i + 1 < chosen.length ? chosen[i + 1].end : text.length;
       const after = text.slice(h.end, Math.min(until, h.end + 120));
       const words = /\bline (\d+)\b/.exec(after);
       if (words) line = Number(words[1]);
@@ -233,10 +293,24 @@ function firstLine(message, max = 320) {
   return one.length > max ? one.slice(0, max - 1) + "…" : one;
 }
 
+/**
+ * Text in a code span. A file name is the pull request's to pick: a backtick in it gets a longer fence,
+ * and a control character, a newline that would end the list and could close the <details> included,
+ * is written as an escape.
+ */
+export function code(s) {
+  const t = String(s).replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+  const run = Math.max(0, ...[...t.matchAll(/`+/g)].map((m) => m[0].length));
+  // CommonMark drops one space from each end of a span that has both; a padding space keeps the name's.
+  const pad = run || (/^ /.test(t) && / $/.test(t)) ? " " : "";
+  const fence = "`".repeat(run + 1);
+  return `${fence}${pad}${t}${pad}${fence}`;
+}
+
 function where(f, group) {
-  const locs = f.locations.filter((l) => l.group === group).map((l) => `\`${l.file}${l.line ? `:${l.line}` : ""}\``);
+  const locs = f.locations.filter((l) => l.group === group).map((l) => code(`${l.file}${l.line ? `:${l.line}` : ""}`));
   if (locs.length) return ` — ${locs.slice(0, 6).join(", ")}${locs.length > 6 ? `, +${locs.length - 6} more` : ""}`;
-  if (f.related.length) return ` — related: this change edits ${f.related.slice(0, 3).map((r) => `\`${r}\``).join(", ")}`;
+  if (f.related.length) return ` — related: this change edits ${f.related.slice(0, 3).map(code).join(", ")}`;
   return "";
 }
 
@@ -309,7 +383,7 @@ export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
     if (c.posted) out.push("", `It posted ${c.posted} inline comment(s) before it stopped.`);
   } else out.push("Not run.");
   if (c.offDiff?.length) {
-    out.push("", `⚠️ ${c.offDiff.length} comment(s) landed on lines this change did not modify: ${c.offDiff.map((o) => `\`${o.path}:${o.line}\``).join(", ")}. Please report this to wolfproof-review.`);
+    out.push("", `⚠️ ${c.offDiff.length} comment(s) landed on lines this change did not modify: ${c.offDiff.map((o) => code(`${o.path}:${o.line}`)).join(", ")}. Please report this to wolfproof-review.`);
   }
   out.push("", `<sub>[wolfproof-review](https://github.com/tjwitko/wolfproof-review) ${m.reviewVersion || ""} · rules from wolfproof's checks.md</sub>`);
 

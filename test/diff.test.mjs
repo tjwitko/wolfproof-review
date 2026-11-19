@@ -18,6 +18,7 @@ const workflow = readFileSync(new URL("../.github/workflows/review.yml", import.
 const scanStep = workflow.slice(workflow.indexOf('out="$RUNNER_TEMP/wolfproof-review-input"'));
 const noattrLine = /^ *(noattr=\$\(git hash-object -t tree \/dev\/null\))$/m.exec(scanStep)[1];
 const diffLine = /^ *(git --attr-source="\$noattr" [^\n]*> "\$out\/diff\.patch")$/m.exec(scanStep)[1];
+const filesLine = /^ *(git [^\n]*ls-files[^\n]*> "\$out\/files\.txt")$/m.exec(scanStep)[1];
 
 const G = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"];
 
@@ -26,7 +27,7 @@ const G = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.
  * two. With `withPatches`, also each file as GitHub's pulls/{pr}/files has it: its hunks with three
  * lines of context and no headers.
  */
-function diffOf(base, head, { withPatches = false } = {}) {
+function diffOf(base, head, { withPatches = false, withFiles = false } = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "wr-diff-"));
   const git = (...a) => execFileSync("git", [...G, ...a], { cwd: dir, encoding: "utf8" });
   try {
@@ -44,11 +45,12 @@ function diffOf(base, head, { withPatches = false } = {}) {
     git("commit", "-q", "-m", "head");
     const out = path.join(dir, "out");
     mkdirSync(out);
-    execFileSync("bash", ["-ec", `${noattrLine}\n${diffLine}`], {
+    execFileSync("bash", ["-ec", `${noattrLine}\n${diffLine}\n${filesLine}`], {
       cwd: dir,
       env: { PATH: process.env.PATH, base: git("rev-parse", "HEAD~1").trim(), HEAD_SHA: git("rev-parse", "HEAD").trim(), out },
     });
     const diff = readFileSync(path.join(out, "diff.patch"), "utf8");
+    if (withFiles) return { diff, filesTxt: readFileSync(path.join(out, "files.txt"), "utf8") };
     if (!withPatches) return diff;
     const names = git("diff", "--name-only", "HEAD~1", "HEAD").split("\n").filter(Boolean);
     const files = names.map((filename) => {
@@ -210,8 +212,93 @@ test("a name with a leading space gets its lines, and the file list keeps the sp
     assert.equal(r.status, 0, r.stderr);
     const sorted = JSON.parse(readFileSync(at("sorted.json"), "utf8"));
     assert.deepEqual(sorted.change.changedFiles, [LEADING]);
-    assert.deepEqual(sorted.findings[0].locations, [], "lead.py is not a file of this repository");
+    assert.deepEqual(sorted.findings[0].locations, [{ file: LEADING, line: 1, group: "changed-line" }], "lead.py is not a file of this repository");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Where a finding is, when its file's name has a space or has to be quoted ---------------------
+
+const CLI = new URL("../plugins/wolfproof-review/scripts/review.mjs", import.meta.url).pathname;
+
+/**
+ * The scan job's diff.patch and files.txt for a change from `base` to `head`, then review.mjs sort
+ * over them with wolfproof findings whose messages are `messages`; the sorted findings, in order.
+ */
+function sortedIn(base, head, messages, { root } = {}) {
+  const { diff, filesTxt } = diffOf(base, head, { withFiles: true });
+  const dir = mkdtempSync(path.join(os.tmpdir(), "wr-sort-"));
+  try {
+    const at = (n) => path.join(dir, n);
+    writeFileSync(at("diff.patch"), diff);
+    writeFileSync(at("files.txt"), filesTxt);
+    writeFileSync(at("result.json"), JSON.stringify({ exitCode: 1, findings: messages.map((message) => ({ severity: "blocking", message })) }));
+    const args = ["sort", "--result", at("result.json"), "--diff", at("diff.patch"), "--files", at("files.txt"), "--out", at("sorted.json")];
+    if (root) args.push("--root", root);
+    const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const sorted = JSON.parse(readFileSync(at("sorted.json"), "utf8"));
+    const byMessage = new Map(sorted.findings.map((f) => [f.message, f]));
+    return { diff, sorted, findings: messages.map((m) => byMessage.get(m)) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const where = (f) => [f.group, f.locations.map((l) => [l.file, l.line, l.group])];
+const XACE = ["x", "ace.py"].join(" ");
+const YACE = ["y", "ace.py"].join(" ");
+
+test("a finding in a new file with a space in its name sorts with the change: on its line, or in its file", () => {
+  // y ace.py was there already; the change edits its line 3 only.
+  const yBefore = lines(30);
+  const yAfter = yBefore.replace("x3 = 3", "x3 = 'changed'");
+  const { findings } = sortedIn(
+    { "keep.py": lines(3), [YACE]: yBefore },
+    { [XACE]: lines(25), [YACE]: yAfter },
+    [`sast: SQL injection — ${XACE}:20`, `sast: SQL injection — /work/p/${YACE}:20`],
+    { root: "/work/p" }
+  );
+  assert.deepEqual(where(findings[0]), ["changed-line", [[XACE, 20, "changed-line"]]]);
+  assert.deepEqual(where(findings[1]), ["changed-file", [[YACE, 20, "changed-file"]]]);
+});
+
+test("beside an unchanged ace.py, x ace.py:20 is the new file's line, and ace.py:20 is still elsewhere", () => {
+  const { findings } = sortedIn({ "ace.py": lines(30) }, { [XACE]: lines(25) }, [`sast: SQL injection — ${XACE}:20`, "sast: SQL injection — ace.py:20"]);
+  assert.deepEqual(where(findings[0]), ["changed-line", [[XACE, 20, "changed-line"]]]);
+  assert.deepEqual(where(findings[1]), ["elsewhere", [["ace.py", 20, "elsewhere"]]]);
+});
+
+test("a space at either end of a name counts where the message sets it apart, and the unchanged twin stays elsewhere", () => {
+  const { findings } = sortedIn(
+    { "victim.py": lines(30), "lead.py": lines(30) },
+    { [TRAILING]: lines(25), [LEADING]: lines(25) },
+    [
+      `sast: SQL injection — ${TRAILING}:20`, // "victim.py :20"
+      "sast: SQL injection — victim.py:20",
+      "sast: SQL injection — victim.py — line 20",
+      `sast: SQL injection —  ${LEADING.trimStart()}:20`, // two spaces: the separator and the name's own
+      "sast: SQL injection — lead.py:20",
+    ]
+  );
+  assert.deepEqual(where(findings[0]), ["changed-line", [[TRAILING, 20, "changed-line"]]]);
+  assert.deepEqual(where(findings[1]), ["elsewhere", [["victim.py", 20, "elsewhere"]]]);
+  assert.deepEqual(where(findings[2]), ["elsewhere", [["victim.py", 20, "elsewhere"]]]);
+  assert.deepEqual(where(findings[3]), ["changed-line", [[LEADING, 20, "changed-line"]]]);
+  assert.deepEqual(where(findings[4]), ["elsewhere", [["lead.py", 20, "elsewhere"]]]);
+});
+
+test("names git quotes (a tab, a double quote, a backslash, a newline) are read as the names they are", async () => {
+  const odd = ["t\tab.py", 'q"uote.py', ["back", "slash.py"].join("\\"), "nl\nx.py", ["sp ace", "tab.py"].join("\t")];
+  const head = Object.fromEntries(odd.map((n) => [n, lines(5)]));
+  const { diff, findings } = sortedIn({ "keep.py": lines(3) }, head, odd.map((n) => `sast: SQL injection — ${n}:3`));
+  assert.ok(diff.includes('+++ "b/t\\tab.py"'), "git quotes the name in the header");
+  const d = parseDiff(diff);
+  assert.deepEqual([...d.keys()].sort(), [...odd].sort());
+  for (const [i, n] of odd.entries()) {
+    assert.deepEqual(d.get(n).ranges, [[1, 5]], JSON.stringify(n));
+    assert.deepEqual(where(findings[i]), ["changed-line", [[n, 3, "changed-line"]]], JSON.stringify(n));
+    assert.equal((await comment(diff, { path: n, line: 3, body: "x" })).isError, false, JSON.stringify(n));
   }
 });
