@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.2
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.3
     secrets:
       REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
@@ -61,7 +61,7 @@ That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, und
 With OpenAI, for example:
 
 ```yaml
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.2
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.3
     with:
       provider: openai
       model: gpt-5.1
@@ -110,7 +110,7 @@ comments in the chat instead of posting them.
 - **With wolfproof,** it runs wolfproof first. wolfproof runs your tests and builds, so this can take
   a few minutes. It looks in two places:
   - **the project's own install,** `node_modules/wolfproof`
-    (`npm install --save-dev github:tjwitko/wolfproof#v1.17.0`), which wins when it is there, since it
+    (`npm install --save-dev github:tjwitko/wolfproof#v1.18.0`), which wins when it is there, since it
     is the version the project chose;
   - **`WOLFPROOF_BIN`,** for a repository that does not install it, such as one that is not a Node
     project. Set it to wolfproof's directory, to its `bin/validate.mjs`, or to a command on your
@@ -121,7 +121,7 @@ comments in the chat instead of posting them.
     { "env": { "WOLFPROOF_BIN": "~/tools/wolfproof" } }
     ```
 
-    One way to get a copy: `git clone --branch v1.17.0 https://github.com/tjwitko/wolfproof ~/tools/wolfproof`,
+    One way to get a copy: `git clone --branch v1.18.0 https://github.com/tjwitko/wolfproof ~/tools/wolfproof`,
     then `npm ci` inside it.
 - **Without wolfproof,** it reviews against the rulebook alone and says so. Add `--no-scan` to skip the
   scan deliberately.
