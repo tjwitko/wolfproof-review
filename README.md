@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
     secrets:
       REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
@@ -62,7 +62,7 @@ That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, und
 With OpenAI, for example:
 
 ```yaml
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
     with:
       provider: openai
       model: gpt-5.1
@@ -86,7 +86,7 @@ is easy to read as "reviewed, nothing found", so a repository that relies on the
 the check to fail instead:
 
 ```yaml
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
     with:
       on-unfinished: fail
 ```

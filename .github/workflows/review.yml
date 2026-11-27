@@ -13,7 +13,7 @@ name: wolfproof review
 #     pull-requests: write
 #   jobs:
 #     wolfproof-review:
-#       uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
+#       uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
 #       secrets:
 #         REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 #
@@ -74,7 +74,7 @@ on:
 env:
   # The release this file belongs to, and the wolfproof it pins. test/consistency.test.mjs checks
   # both against the plugin's version, the rulebook copy and the `uses:` lines below.
-  REVIEW_VERSION: v0.3.4
+  REVIEW_VERSION: v0.3.5
   WOLFPROOF_VERSION: v1.19.0
 
 jobs:
