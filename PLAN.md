@@ -1,8 +1,8 @@
 # wolfproof-review: plan
 
 A pull-request reviewer for legacy repositories. Wolfproof's scanners supply the evidence, wolfproof's
-rules are the guideline, and a model comments on the lines the pull request changed. By default it
-never fails the build, so a repository with years of findings can adopt it on day one.
+rules are the guideline, and a model comments on the lines the pull request changed. No finding
+fails the build, so a repository with years of findings can adopt it on day one.
 
 Status: phase 1. The reviewer runs on this repository's own pull requests; see "Phase 1 as built".
 
@@ -228,7 +228,14 @@ Each case runs three times. Results vary between runs of the same model, so one 
 ## Phase 1 as built
 
 - No `fail-on` input yet (phase 3). Inputs: `provider`, `model`, `base-url`, `max-comments`,
-  `max-input-tokens`, `paths-ignore`, and `review-ref` for this repository's own self-review.
+  `max-input-tokens`, `on-unfinished`, `paths-ignore`, and `review-ref` for this repository's own
+  self-review.
+- A review that was due and did not finish (a budget, turn or time limit, a cut-off reply, an API
+  error, or a scan that left nothing) opens the summary with a line that says so. `on-unfinished:
+  fail` also fails the `review` job, in its last step, after the summary is posted; the default,
+  `warn`, leaves the check green. The workflow's outputs `finished` and `outcome` say which it was.
+  Added after one pull request's review stopped at its budget on three of seven heads, each time
+  under a green check. This repository's self-review sets `fail`.
 - The key: `REVIEW_API_KEY`. `ANTHROPIC_API_KEY` is still read for the anthropic provider when
   `base-url` is empty, so callers from before the rename keep working; it never goes to a gateway.
 - Cost: Anthropic requests use automatic prompt caching (a top-level `cache_control`) and a

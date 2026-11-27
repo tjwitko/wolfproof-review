@@ -2,7 +2,8 @@ name: wolfproof review
 
 # A comment-only review of a pull request: wolfproof scans the repository, a script sorts its findings
 # by whether the pull request touched them, and a model comments on the lines the pull request changed.
-# It never fails the build. Call it from a workflow of your own (see the README):
+# No finding fails the build. With `on-unfinished: fail` the review job fails when a review that was
+# due did not finish; by default it only says so. Call it from a workflow of your own (see the README):
 #
 #   on:
 #     pull_request:
@@ -43,6 +44,10 @@ on:
         description: The most prompt tokens one review may use across its turns, cached or not. A run that would go past it stops, and the summary says so.
         type: number
         default: 1000000
+      on-unfinished:
+        description: What the review job does when a review that was due did not finish (a budget, turn or time limit, a reply cut off, an API error, or a scan that left nothing). warn keeps the job green and says so in the summary; fail fails the job.
+        type: string
+        default: warn
       paths-ignore:
         description: Globs, one per line or comma-separated, whose findings and changes are left out (generated code, vendored code).
         type: string
@@ -51,6 +56,13 @@ on:
         description: The wolfproof-review ref whose scripts and prompt run. Empty means the release this workflow file belongs to.
         type: string
         default: ""
+    outputs:
+      finished:
+        description: true when the model's review ran to its end, false when it did not or was not due (no key, a fork).
+        value: ${{ jobs.review.outputs.finished }}
+      outcome:
+        description: finished, unfinished (a review was due and did not finish) or skipped (none was due).
+        value: ${{ jobs.review.outputs.outcome }}
     secrets:
       REVIEW_API_KEY:
         description: Your own API key for the provider. Without one, only the scanner summary is posted.
@@ -150,6 +162,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    outputs:
+      finished: ${{ steps.outcome.outputs.finished }}
+      outcome: ${{ steps.outcome.outputs.outcome }}
     env:
       IN: .wolfproof-review-input
       CLI: .wolfproof-review/plugins/wolfproof-review/scripts/review.mjs
@@ -261,9 +276,13 @@ jobs:
           BASE_URL: ${{ inputs.base-url }}
           MAX: ${{ inputs.max-comments }}
           BUDGET: ${{ inputs.max-input-tokens }}
+          ON_UNFINISHED: ${{ inputs.on-unfinished }}
         run: |
           if [ "$PROVIDER" != anthropic ] && [ "$PROVIDER" != openai ]; then
             echo "::error::provider is anthropic or openai, not \"$PROVIDER\""; exit 1
+          fi
+          if [ "$ON_UNFINISHED" != warn ] && [ "$ON_UNFINISHED" != fail ]; then
+            echo "::error::on-unfinished is warn or fail, not \"$ON_UNFINISHED\""; exit 1
           fi
           if [ -n "$MODEL" ] && ! [[ "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]; then
             echo "::error::model is a model ID such as claude-sonnet-5-5 or gpt-5.1, not \"$MODEL\""; exit 1
@@ -342,6 +361,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           STATUS: ${{ steps.plan.outputs.status }}
+          ON_UNFINISHED: ${{ inputs.on-unfinished }}
         run: |
           # run.json, when the review wrote one, says how it went; without it a review that should have
           # run failed.
@@ -356,4 +376,20 @@ jobs:
             [ -f "$IN/check.json" ] && args+=(--check "$IN/check.json")
           fi
           [ -f "$IN/sorted.json" ] && args+=(--sorted "$IN/sorted.json") || args+=(--sorted /dev/null)
-          node "$CLI" summary "${args[@]}" --status "$status" --post
+          # The summary is posted whatever the input says; a value the plan step refused reads as warn.
+          [ "$ON_UNFINISHED" = fail ] || ON_UNFINISHED=warn
+          node "$CLI" summary "${args[@]}" --status "$status" --on-unfinished="$ON_UNFINISHED" --post
+
+      # Last, after the summary is posted: the outputs a caller can read, and with on-unfinished: fail
+      # the one step of this job that fails it. Every step above ends green whatever the review did.
+      - name: Say whether the review finished
+        id: outcome
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ steps.plan.outputs.status }}
+          ON_UNFINISHED: ${{ inputs.on-unfinished }}
+        run: |
+          [ "$ON_UNFINISHED" = fail ] || ON_UNFINISHED=warn
+          args=()
+          [ "$STATUS" = run ] && [ -f "$IN/run.json" ] && args+=(--run "$IN/run.json")
+          node "$CLI" outcome "${args[@]}" --plan="$STATUS" --on-unfinished="$ON_UNFINISHED"

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   MARKER,
@@ -11,6 +15,8 @@ import {
   locationsIn,
   sortFindings,
   renderSummary,
+  reviewOutcome,
+  finalStatus,
   offDiff,
   buildPrompt,
   stripFrontMatter,
@@ -208,4 +214,126 @@ test("the summary warns when the scan's diff did not match the pull request's co
   assert.doesNotMatch(plain, /did not match/);
   const forged = renderSummary(sortFindings({ result, diff, files, meta: { head: "abc1234", diffMismatch: true } }), {});
   assert.match(forged, /> ⚠️ The scan job's diff did not match the pull request's commits, so this review used the diff it computed itself/);
+});
+
+// An unfinished review. On one pull request the review stopped at its budget on three of seven heads,
+// and each time the check was green and the only sign was a sentence under the scanner's findings.
+
+test("a review that was due and did not finish is told from one that finished and one that was not due", () => {
+  assert.equal(reviewOutcome("ran"), "finished");
+  for (const s of ["failed", "no-scan"]) assert.equal(reviewOutcome(s), "unfinished", s);
+  for (const s of ["no-key", "fork", "not-run", undefined]) assert.equal(reviewOutcome(s), "skipped", String(s));
+  // The plan said run: run.json decides, and none at all is a review that failed.
+  assert.equal(finalStatus("run", { status: "ran" }), "ran");
+  assert.equal(finalStatus("run", { status: "failed", stopped: "input-tokens" }), "failed");
+  assert.equal(finalStatus("run", null), "failed");
+  // A run.json is not read for a review the plan did not start.
+  assert.equal(finalStatus("no-key", { status: "ran" }), "no-key");
+  assert.equal(finalStatus("fork", null), "fork");
+  assert.equal(finalStatus("", null), "no-scan");
+  assert.equal(finalStatus(undefined, null), "no-scan");
+});
+
+test("the summary opens with the unfinished review, before the scanner's findings", () => {
+  const s = sortFindings({ result, diff, files, meta: { head: "abcdef123" } });
+  const lineOf = (body, re) => body.split("\n").findIndex((l) => re.test(l));
+  const budget = { status: "failed", stopped: "input-tokens", maxInputTokens: 1000000, posted: 2, note: "stopped at the input-token budget (1000000), after 9 turn(s) that used 980000" };
+
+  const warn = renderSummary(s, { review: budget });
+  assert.equal(warn.split("\n")[3], "> ⚠️ **The model's review did not finish.** It stopped at its input-token budget of 1000000 tokens, after 2 inline comment(s), so part of this change was not reviewed. The review check still passes. Set `on-unfinished: fail` in the calling workflow to make it fail instead.");
+  assert.ok(lineOf(warn, /did not finish/) < lineOf(warn, /wolfproof .*scanned/), "above the scanner's line");
+  assert.match(renderSummary(s, { review: { ...budget, onUnfinished: "warn" } }), /The review check still passes\./);
+
+  const fail = renderSummary(s, { review: { ...budget, onUnfinished: "fail" } });
+  assert.match(fail.split("\n")[3], /so part of this change was not reviewed\. The review check fails for this, because the calling workflow sets `on-unfinished: fail`\.$/);
+  assert.doesNotMatch(fail, /still passes/);
+
+  // Any other failure: the reason the run gave, once, with no doubled full stop.
+  const cut = renderSummary(s, { review: { status: "failed", note: "stopped at the turn limit (60).", posted: 0 } });
+  assert.match(cut.split("\n")[3], /^> ⚠️ \*\*The model's review did not finish\.\*\* stopped at the turn limit \(60\)\. Part of this change may not have been reviewed\. /);
+  const bare = renderSummary(s, { review: { status: "failed", posted: 1 } });
+  assert.match(bare.split("\n")[3], /did not finish\.\*\* It failed, after 1 inline comment\(s\)\. Part of this change may not have been reviewed\./);
+  // A scan that left nothing: the review never started.
+  assert.match(renderSummary(s, { review: { status: "no-scan" } }).split("\n")[3], /^> ⚠️ \*\*The model's review did not run\.\*\* The scan job left nothing to review\. /);
+
+  // A finished review, and one that was not due, open as before.
+  for (const status of ["ran", "no-key", "fork", "not-run"]) {
+    const body = renderSummary(s, { review: { status, posted: 0, onUnfinished: "fail" } });
+    assert.doesNotMatch(body, /review did not finish|review did not run|on-unfinished/, status);
+    assert.match(body.split("\n")[3], /^wolfproof .*scanned/, status);
+  }
+  // A reason is the run's own text: its first line only, with HTML and mentions escaped as elsewhere.
+  const odd = renderSummary(s, { review: { status: "failed", note: "HTTP 500 <b>x</b> @someone\n## heading\n> quote" } });
+  const top = odd.split("\n")[3];
+  assert.match(top, /did not finish\.\*\* HTTP 500 &lt;b>x&lt;\/b> @\u200bsomeone\. Part of this change/);
+  assert.doesNotMatch(top, /heading|quote|<b>/);
+  assert.equal(odd.split("\n")[4], "");
+});
+
+test("the scanner's line promises only what holds with on-unfinished: fail", () => {
+  const s = sortFindings({ result, diff, files, meta: { head: "abcdef123" } });
+  const body = renderSummary(s, { review: { status: "ran", posted: 0 } });
+  assert.match(body, /This review is comment-only: no finding fails the build\./);
+  assert.doesNotMatch(body, /does not fail the build/);
+});
+
+test("the outcome command writes the job's outputs, and fails the step only when asked to and only for an unfinished review", () => {
+  const cli = fileURLToPath(new URL("../plugins/wolfproof-review/scripts/review.mjs", import.meta.url));
+  const dir = mkdtempSync(path.join(tmpdir(), "outcome-"));
+  try {
+    const runFile = (o) => {
+      const f = path.join(dir, `run-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(f, JSON.stringify(o));
+      return f;
+    };
+    const run = (...args) => {
+      const out = path.join(dir, `out-${Math.random().toString(36).slice(2)}`);
+      writeFileSync(out, "");
+      const r = spawnSync(process.execPath, [cli, "outcome", ...args], { encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: out } });
+      return { code: r.status, text: r.stdout + r.stderr, outputs: readFileSync(out, "utf8") };
+    };
+    const stopped = runFile({ status: "failed", stopped: "input-tokens", error: "stopped at the input-token budget (1000000), after 9 turn(s) that used 980000" });
+    const ran = runFile({ status: "ran" });
+
+    // Unfinished, the default and warn: outputs say so, the step passes.
+    for (const mode of [[], ["--on-unfinished=warn"], ["--on-unfinished="]]) {
+      const r = run("--plan=run", "--run", stopped, ...mode);
+      assert.equal(r.code, 0, mode.join());
+      assert.equal(r.outputs, "finished=false\noutcome=unfinished\n");
+      assert.doesNotMatch(r.text, /::error::/);
+    }
+    // Unfinished, fail: the step fails, with one error annotation that gives the reason.
+    const f = run("--plan=run", "--run", stopped, "--on-unfinished=fail");
+    assert.equal(f.code, 1);
+    assert.equal(f.outputs, "finished=false\noutcome=unfinished\n");
+    assert.match(f.text, /^::error::wolfproof-review: the review did not finish: stopped at the input-token budget \(1000000\), after 9 turn\(s\) that used 980000\. This job fails because on-unfinished is fail\.$/m);
+    // The review step was killed and left nothing; the scan left nothing.
+    assert.match(run("--plan=run", "--on-unfinished=fail").text, /did not finish: the review step left no result\./);
+    assert.equal(run("--plan=run", "--on-unfinished=fail").code, 1);
+    const noScan = run("--plan=", "--on-unfinished=fail");
+    assert.equal(noScan.code, 1);
+    assert.match(noScan.text, /did not finish: the scan job left nothing to review\./);
+    assert.equal(run("--plan=no-scan", "--on-unfinished=fail").code, 1);
+
+    // Finished: passes in both modes. Not due: passes in both, and is not called finished.
+    for (const mode of ["warn", "fail"]) {
+      const ok = run("--plan=run", "--run", ran, `--on-unfinished=${mode}`);
+      assert.equal(ok.code, 0, mode);
+      assert.equal(ok.outputs, "finished=true\noutcome=finished\n");
+      for (const plan of ["no-key", "fork"]) {
+        const skipped = run(`--plan=${plan}`, `--on-unfinished=${mode}`);
+        assert.equal(skipped.code, 0, `${plan} ${mode}`);
+        assert.equal(skipped.outputs, "finished=false\noutcome=skipped\n");
+      }
+    }
+    // An error that tries to write a workflow command of its own stays on the one line.
+    const sly = run("--plan=run", "--run", runFile({ status: "failed", error: "boom\n::error::forged" }), "--on-unfinished=fail");
+    assert.equal(sly.text.split("\n").filter((l) => l.startsWith("::")).length, 1);
+    // A value that is neither is a usage error, not a pass.
+    const bad = run("--plan=run", "--run", stopped, "--on-unfinished=maybe");
+    assert.equal(bad.code, 2);
+    assert.match(bad.text, /on-unfinished is warn or fail, not "maybe"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

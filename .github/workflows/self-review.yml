@@ -17,5 +17,7 @@ jobs:
     with:
       review-ref: ${{ github.event.pull_request.head.sha }}
       paths-ignore: test/fixtures
+      # A review of the reviewer that did not finish is not a review: the check says so in red.
+      on-unfinished: fail
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -349,21 +349,60 @@ function escapeMd(s) {
 }
 
 /**
+ * Whether a review that was due happened. "finished": the model ended its review. "unfinished": a
+ * review was due and did not end normally (a budget, turn or time limit, a reply cut off, an API
+ * error, a step that left no result) or could not start because the scan left nothing. "skipped":
+ * none was due (no key, a fork's pull request, not asked for).
+ */
+export function reviewOutcome(status) {
+  if (status === "ran") return "finished";
+  return status === "failed" || status === "no-scan" ? "unfinished" : "skipped";
+}
+
+/**
+ * The review's status at the end of the job, from the plan step's status and run.json. A review the
+ * plan said to run that left no run.json failed; a plan step that set nothing left nothing to review.
+ */
+export function finalStatus(plan, ran) {
+  if (plan === "run") return ran?.status === "ran" ? "ran" : "failed";
+  return typeof plan === "string" && plan ? plan : "no-scan";
+}
+
+/** The line that opens the summary when a review that was due did not finish. */
+function unfinishedLine(c) {
+  const posted = c.posted ? `, after ${c.posted} inline comment(s)` : "";
+  let what;
+  if (c.status === "no-scan") what = "**The model's review did not run.** The scan job left nothing to review.";
+  else if (c.stopped === "input-tokens") {
+    what = `**The model's review did not finish.** It stopped at its input-token budget${c.maxInputTokens ? ` of ${c.maxInputTokens} tokens` : ""}${posted}, so part of this change was not reviewed.`;
+  } else {
+    what = `**The model's review did not finish.** ${c.note ? `${escapeMd(firstLine(c.note, 300)).replace(/[.\s]+$/, "")}${posted}.` : `It failed${posted}.`} Part of this change may not have been reviewed.`;
+  }
+  const check =
+    c.onUnfinished === "fail"
+      ? "The review check fails for this, because the calling workflow sets `on-unfinished: fail`."
+      : "The review check still passes. Set `on-unfinished: fail` in the calling workflow to make it fail instead.";
+  return `> ⚠️ ${what} ${check}`;
+}
+
+/**
  * The one summary comment, rewritten on each push.
  * @param {object} sorted sortFindings' output
- * @param {{ review?: {status: string, model?: string, posted?: number, offDiff?: Array<{path: string, line: number}>, note?: string, stopped?: string, maxInputTokens?: number} }} extra
+ * @param {{ review?: {status: string, model?: string, posted?: number, offDiff?: Array<{path: string, line: number}>, note?: string, stopped?: string, maxInputTokens?: number, onUnfinished?: string} }} extra
  */
 export function renderSummary(sorted, { review = { status: "not-run" } } = {}) {
   const m = sorted.meta || {};
   const head = m.head ? ` \`${String(m.head).slice(0, 7)}\`` : "";
   const out = [MARKER, "### wolfproof review", ""];
+  // First, so nobody reads a list of comments as the whole review when it is part of one.
+  if (reviewOutcome(review.status) === "unfinished") out.push(unfinishedLine(review), "");
   if (!sorted.scan.ran) {
     out.push(`wolfproof did not produce a result for${head || " this change"}, so there are no scanner findings below. ${m.scanNote || "See the scan job's log."}`);
   } else {
     const s = sorted.scan;
     out.push(
       `wolfproof ${m.wolfproof || ""} scanned${head}: **${s.outcome}** for the whole repository (${s.blocking ?? "?"} blocking). ` +
-        `This review is comment-only and does not fail the build.`
+        `This review is comment-only: no finding fails the build.`
     );
     if (s.error) out.push("", `> wolfproof stopped early: ${escapeMd(firstLine(s.error, 300))}`);
     if (s.couldNotRun.length) out.push("", `> Not checked on this runner: ${escapeMd(s.couldNotRun.map((c) => firstLine(c, 160)).join("; "))}`);
