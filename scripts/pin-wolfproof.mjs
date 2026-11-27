@@ -13,8 +13,12 @@
 //   - plugins/wolfproof-review/.claude-plugin/plugin.json: the reviewer's version, one patch up.
 // Then it runs the tests, which check that the versions agree.
 //
-// Before editing, it checks the tag on GitHub: wolfproof's Action must still declare the two outputs
-// the scan job reads (result, outcome), and the scanner-install action must exist there.
+// Before editing, it checks the checkout: the tree is clean, and HEAD is origin/main itself, after a
+// fetch. It reads the versions it moves from the files at HEAD and pushes HEAD:main, so on another
+// branch it would read old versions, and a push that happened to fast-forward main would publish
+// them. Run it from a checkout of main, or from a worktree at origin/main (a detached HEAD is fine).
+// Then it checks the tag on GitHub: wolfproof's Action must still declare the two outputs the scan
+// job reads (result, outcome), and the scanner-install action must exist there.
 //
 // Prints one line: PINNED, COMMITTED or PUSHED, ALREADY (nothing to do), or STOP with the reason. A
 // STOP after editing leaves the edits for you to inspect. Exit 0 except on STOP.
@@ -55,6 +59,25 @@ export function changedPaths(z) {
     if (/^(?:[RC].|.[RC])/.test(parts[i])) i++;
   }
   return out;
+}
+
+/**
+ * Why this checkout is not one to pin from, or null when HEAD is origin/main. `git` runs a git
+ * command in the checkout and returns its trimmed output, throwing on failure. It fetches main first,
+ * so a checkout whose main is behind GitHub's is not taken for current.
+ */
+export function notAtMain(git) {
+  try {
+    git("fetch", "-q", "origin", "main");
+  } catch (err) {
+    return `could not fetch origin's main, so whether HEAD is current is not known (${String(err.message || err).split("\n")[0].slice(0, 200)})`;
+  }
+  const head = git("rev-parse", "HEAD");
+  const main = git("rev-parse", "origin/main");
+  if (head === main) return null;
+  const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+  const where = branch === "HEAD" ? "detached" : `on ${branch}`;
+  return `HEAD is not origin/main (${where} at ${head.slice(0, 7)}, origin/main is ${main.slice(0, 7)}); pin from main, or from a worktree at origin/main`;
 }
 
 /** The outputs an Action declares, from its action.yml text. */
@@ -124,6 +147,8 @@ async function main(argv) {
   const git = (...a) => execFileSync("git", a, { cwd: ROOT, encoding: "utf8" }).trim();
   const stop = (why) => (console.log(`STOP  wolfproof-review: ${why}`), 1);
   if (git("status", "--porcelain")) return stop("tree not clean");
+  const notMain = notAtMain(git);
+  if (notMain) return stop(notMain);
 
   const read = (k) => readFileSync(path.join(ROOT, FILES[k]), "utf8");
   const plan = pinEdits({ workflow: read("workflow"), readme: read("readme"), plugin: read("plugin") }, want);
