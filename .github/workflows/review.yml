@@ -12,7 +12,7 @@ name: wolfproof review
 #     pull-requests: write
 #   jobs:
 #     wolfproof-review:
-#       uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.3
+#       uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
 #       secrets:
 #         REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 #
@@ -62,8 +62,8 @@ on:
 env:
   # The release this file belongs to, and the wolfproof it pins. test/consistency.test.mjs checks
   # both against the plugin's version, the rulebook copy and the `uses:` lines below.
-  REVIEW_VERSION: v0.3.3
-  WOLFPROOF_VERSION: v1.18.0
+  REVIEW_VERSION: v0.3.4
+  WOLFPROOF_VERSION: v1.19.0
 
 jobs:
   scan:
@@ -88,13 +88,13 @@ jobs:
       - name: Install wolfproof's scanners
         id: tooling
         continue-on-error: true
-        uses: tjwitko/wolfproof/.github/actions/control-tooling@v1.18.0
+        uses: tjwitko/wolfproof/.github/actions/control-tooling@v1.19.0
 
       # Blocked and incomplete both fail this step; the review reads the result either way.
       - name: Run wolfproof
         id: gate
         continue-on-error: true
-        uses: tjwitko/wolfproof@v1.18.0
+        uses: tjwitko/wolfproof@v1.19.0
 
       - name: Collect the result and the change
         if: ${{ !cancelled() }}
