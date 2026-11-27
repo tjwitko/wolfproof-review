@@ -107,6 +107,28 @@ test("the review has an input-token budget, checked and passed to the run", () =
   assert.match(read("plugins/wolfproof-review/scripts/review.mjs"), /const DEFAULT_MAX_INPUT_TOKENS = 1000000;/);
 });
 
+test("an unfinished review: an input the plan checks, a last step that alone can fail the job, and outputs for the caller", () => {
+  assert.match(workflow, /\n      on-unfinished:\n\s+description: [^\n]+\n\s+type: string\n\s+default: warn\n/);
+  assert.match(workflow, /if \[ "\$ON_UNFINISHED" != warn \] && \[ "\$ON_UNFINISHED" != fail \]; then\n\s+echo "::error::on-unfinished is warn or fail/);
+  // The step is the job's last, runs unless the job was cancelled, and is not allowed to fail quietly.
+  const steps = workflow.slice(workflow.indexOf("\n  review:\n")).split(/\n      - name: /).slice(1);
+  const last = steps.at(-1);
+  assert.match(last, /^Say whether the review finished\n\s+id: outcome\n\s+if: \$\{\{ !cancelled\(\) \}\}\n/);
+  assert.doesNotMatch(last, /continue-on-error/);
+  assert.match(last, /node "\$CLI" outcome "\$\{args\[@\]\}" --plan="\$STATUS" --on-unfinished="\$ON_UNFINISHED"/);
+  // The summary is posted before it, and told the mode, so the comment says what the check did.
+  assert.match(steps.at(-2), /^Post the summary\n[\s\S]*summary "\$\{args\[@\]\}" --status "\$status" --on-unfinished="\$ON_UNFINISHED" --post/);
+  // The job hands the step's outputs to the workflow, and the workflow to its caller.
+  assert.match(workflow, /\n    outputs:\n      finished: \$\{\{ steps\.outcome\.outputs\.finished \}\}\n      outcome: \$\{\{ steps\.outcome\.outputs\.outcome \}\}\n/);
+  assert.match(workflow, /\n      finished:\n\s+description: [^\n]+\n\s+value: \$\{\{ jobs\.review\.outputs\.finished \}\}\n/);
+  assert.match(workflow, /\n      outcome:\n\s+description: [^\n]+\n\s+value: \$\{\{ jobs\.review\.outputs\.outcome \}\}\n/);
+  // The README gives the input and both outputs, and this repository's own reviews ask for fail.
+  const readme = read("README.md");
+  assert.match(readme, /\| `on-unfinished` \| `warn` \|/);
+  assert.match(readme, /`finished`/);
+  assert.match(read(".github/workflows/self-review.yml"), /\n      on-unfinished: fail\n/);
+});
+
 test("the review job keeps only the scan's own files, and reads its own results only when it ran", () => {
   const review = workflow.slice(workflow.indexOf("  review:\n"));
   const download = review.indexOf("- name: Download the scan");

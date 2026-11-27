@@ -2,8 +2,8 @@
 
 A pull-request reviewer for legacy repositories. [wolfproof](https://github.com/tjwitko/wolfproof)'s
 scanners supply the evidence, wolfproof's rules are the guideline, and a model comments only on the
-lines the pull request changed: Claude, or any model behind an OpenAI-compatible API. It never fails
-the build, so a repository with years of existing findings can turn it on today.
+lines the pull request changed: Claude, or any model behind an OpenAI-compatible API. No finding
+fails the build, so a repository with years of existing findings can turn it on today.
 
 wolfproof itself is a gate: it judges the whole repository and blocks. On old code that means it
 blocks on day one, for code nobody touched. This reviewer runs the same scanners and asks a narrower
@@ -42,7 +42,7 @@ permissions:
   pull-requests: write
 jobs:
   wolfproof-review:
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
     secrets:
       REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
@@ -56,12 +56,13 @@ That is all, for Claude Sonnet 5.5 through Anthropic's API. Optional inputs, und
 | `base-url` | the provider's own | An `https://` base URL: a gateway, Azure OpenAI, OpenRouter, or a self-hosted server |
 | `max-comments` | `15` | The most inline comments one run posts, 1 to 50 |
 | `max-input-tokens` | `1000000` | The most prompt tokens one review uses across its turns, cached or not. A review that would go past it stops, and the summary says so |
+| `on-unfinished` | `warn` | What the review job does when a review that was due did not finish: `warn` keeps the check green and says so at the top of the summary, `fail` fails the check. See [When a review does not finish](#when-a-review-does-not-finish) |
 | `paths-ignore` | *(none)* | Globs, one per line or comma-separated, to leave out, such as generated or vendored code |
 
 With OpenAI, for example:
 
 ```yaml
-    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.4
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
     with:
       provider: openai
       model: gpt-5.1
@@ -71,6 +72,31 @@ With OpenAI, for example:
 
 The `openai` provider has not yet been run against a live endpoint. Its tests run against recorded
 request and response shapes only.
+
+### When a review does not finish
+
+A review can stop before the model has read the whole change: at `max-input-tokens`, at its limit of
+60 turns or 20 minutes, on a reply the provider cut off, or on an API error. It also cannot start
+when the scan job left nothing to review. Comments posted before it stopped stay, and they are then
+part of a review, not the whole of one.
+
+The summary comment opens with a line that says so and why. By default the check is still green,
+because the reviewer was built never to fail a build. A green check on a review that did not finish
+is easy to read as "reviewed, nothing found", so a repository that relies on the review can ask for
+the check to fail instead:
+
+```yaml
+    uses: tjwitko/wolfproof-review/.github/workflows/review.yml@v0.3.5
+    with:
+      on-unfinished: fail
+```
+
+With `fail`, the `review` job fails when a review that was due did not finish. It still does not
+fail for a finding, and a review that was never due (no API key, or a pull request from a fork)
+passes as before. A red check after an API outage is cleared by running the job again.
+
+The workflow also has two outputs for a job of your own that `needs` it: `finished` (`true` or
+`false`) and `outcome` (`finished`, `unfinished`, or `skipped` when no review was due).
 
 The reviewer's requests are ordinary API calls, billed as API usage by your provider. Whatever the
 provider, the diff and the files the model reads are sent to it. Requests to Anthropic use prompt
@@ -177,8 +203,9 @@ Everything is pinned: wolfproof by release tag, and every action by commit SHA.
   location. Today the location is read out of each finding's text, so a finding that names no file
   is matched by file kind: a dependency finding counts as touched when the change edits
   `requirements.txt`. That is why nothing here blocks.
-- **It does not fail the build.** An opt-in to fail only on new blocking findings will follow
-  wolfproof's support for snapshotting existing findings. See [PLAN.md](PLAN.md).
+- **No finding fails the build.** An opt-in to fail only on new blocking findings will follow
+  wolfproof's support for snapshotting existing findings. See [PLAN.md](PLAN.md). The one thing that
+  can fail the check today is a review that did not finish, and only with `on-unfinished: fail`.
 - **CodeQL is off.** wolfproof's CodeQL option is licensed for open-source code only without GitHub
   Advanced Security, so the reviewer does not turn it on.
 

@@ -9,11 +9,13 @@
 //                       --rulebook-dir D --diff F --max-comments N --head SHA --out F [--max-turns N] [--minutes N]
 //                                                    (REVIEW_API_KEY, and the same variables as existing)
 //   review.mjs check    --diff F --since ISO --out F     (the same variables)
-//   review.mjs summary  --sorted F [--status STATUS] [--run F] [--check F] [--note TEXT] [--post]
+//   review.mjs summary  --sorted F [--status STATUS] [--run F] [--check F] [--note TEXT] [--on-unfinished warn|fail] [--post]
+//   review.mjs outcome  --plan STATUS [--run F] [--on-unfinished warn|fail]      (GITHUB_OUTPUT, when set)
 //   review.mjs local    [base] [--no-scan]           (wolfproof: node_modules/wolfproof, else WOLFPROOF_BIN)
 //
 // Exit 0, or 2 on a usage error. A GitHub call that fails is reported and, for `summary --post`,
-// does not fail the step: the job summary still carries the text.
+// does not fail the step: the job summary still carries the text. `run` exits 1 when the review did
+// not finish, and so does `outcome` when --on-unfinished is fail.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -22,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, changedFromPatches, diffDisagreement, localDirName, STAMP, wolfproofCommand } from "./lib.mjs";
+import { sortFindings, renderSummary, buildPrompt, offDiff, parseDiff, changedFromPatches, diffDisagreement, localDirName, STAMP, wolfproofCommand, reviewOutcome, finalStatus } from "./lib.mjs";
 import { botReviewComments, postInlineComment, pullFiles, upsertSummary } from "./github.mjs";
 import { makeTools, runReview, logSafe } from "./agent.mjs";
 import { adapter } from "./providers.mjs";
@@ -201,6 +203,35 @@ async function check(o) {
   }
 }
 
+/** What the caller asked for when a review that was due does not finish: "warn" (the default) or "fail". */
+function unfinishedMode(v) {
+  if (v === undefined || v === true || v === "") return "warn";
+  if (v !== "warn" && v !== "fail") {
+    console.error(`wolfproof-review: on-unfinished is warn or fail, not "${logSafe(String(v).slice(0, 40))}"`);
+    process.exit(2);
+  }
+  return v;
+}
+
+/**
+ * Whether the review finished, for the job and its caller: `finished` and `outcome` as step outputs,
+ * and with --on-unfinished fail a failed step when a review that was due did not finish. The job
+ * otherwise ends green whatever happened, which is how three unfinished reviews of one pull request
+ * went unread.
+ */
+function outcome(o) {
+  const mode = unfinishedMode(o["on-unfinished"]);
+  const ran = typeof o.run === "string" ? readJson(o.run) : null;
+  const status = finalStatus(typeof o.plan === "string" ? o.plan : "", ran);
+  const result = reviewOutcome(status);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `finished=${result === "finished"}\noutcome=${result}\n`);
+  console.log(`review: ${result} (${status})`);
+  if (result !== "unfinished" || mode !== "fail") return;
+  const why = status === "no-scan" ? "the scan job left nothing to review" : ran?.error ? logSafe(String(ran.error).split("\n")[0].slice(0, 300)) : "the review step left no result";
+  console.log(`::error::wolfproof-review: the review did not finish: ${why}. This job fails because on-unfinished is fail.`);
+  process.exitCode = 1;
+}
+
 async function summary(o) {
   need(o, "sorted");
   const sorted = readJson(o.sorted) || { meta: {}, scan: { ran: false }, change: { files: 0, lines: 0 }, findings: [], counts: {} };
@@ -215,6 +246,7 @@ async function summary(o) {
     note: ran?.error || (typeof o.note === "string" ? o.note : undefined),
     stopped: ran?.stopped || undefined,
     maxInputTokens: ran?.maxInputTokens ?? undefined,
+    onUnfinished: unfinishedMode(o["on-unfinished"]),
   };
   const body = renderSummary(sorted, { review: shown });
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(/^<!--.*-->\n/, "") + "\n");
@@ -334,7 +366,7 @@ function local(o) {
 }
 
 const o = opts(process.argv.slice(2));
-const commands = { sort, prompt, existing, run: review, check, summary, local };
+const commands = { sort, prompt, existing, run: review, check, summary, outcome, local };
 const run = commands[o._[0]];
 if (!run) {
   console.error(`usage: review.mjs <${Object.keys(commands).join("|")}> ...`);
