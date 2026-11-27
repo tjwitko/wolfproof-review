@@ -1,10 +1,13 @@
 // scripts/pin-wolfproof.mjs: the edits that move the reviewer to a new wolfproof release.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { FILES, actionOutputs, changedPaths, pinEdits } from "../scripts/pin-wolfproof.mjs";
+import { FILES, actionOutputs, changedPaths, notAtMain, pinEdits } from "../scripts/pin-wolfproof.mjs";
 
 const read = (k) => readFileSync(new URL(`../${FILES[k]}`, import.meta.url), "utf8");
 const files = () => ({ workflow: read("workflow"), readme: read("readme"), plugin: read("plugin") });
@@ -57,4 +60,47 @@ test("changedPaths keeps every character of every path, the first included", () 
   assert.deepEqual(changedPaths(" R NEW.md\0README.md\0"), ["NEW.md"]);
   assert.deepEqual(changedPaths(" C copy.md\0orig.md\0 M c.md\0"), ["copy.md", "c.md"]);
   assert.deepEqual(changedPaths(""), []);
+});
+
+// On 2026-11-27 the shared checkout was on a branch merged a week before, six commits behind main.
+// The tree was clean, so the script read the reviewer's version from that branch (0.3.1, where main
+// had 0.3.3), committed a pin to 0.3.2 there, and stopped only because the push to main was refused.
+test("a pin is made only from HEAD at origin/main", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pin-main-"));
+  try {
+    const run = (cwd, ...a) => execFileSync("git", ["-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const commit = (cwd, text) => {
+      writeFileSync(path.join(cwd, "f.txt"), text);
+      run(cwd, "add", "f.txt");
+      run(cwd, "commit", "-qm", text);
+    };
+    run(dir, "init", "-q", "--bare", "origin.git");
+    run(dir, "clone", "-q", "origin.git", "work");
+    const work = path.join(dir, "work");
+    commit(work, "one");
+    run(work, "push", "-q", "origin", "HEAD:main");
+    const git = (...a) => run(work, ...a);
+
+    assert.equal(notAtMain(git), null, "on main, level with origin");
+    run(work, "switch", "-q", "--detach", "origin/main");
+    assert.equal(notAtMain(git), null, "a detached HEAD at origin/main, as in a worktree");
+
+    run(work, "switch", "-q", "-c", "docs/old", "origin/main");
+    commit(work, "two");
+    assert.match(notAtMain(git), /^HEAD is not origin\/main \(on docs\/old at [0-9a-f]{7}, origin\/main is [0-9a-f]{7}\)/, "a branch with a commit main does not have");
+
+    // Main moves on GitHub; this checkout's main and its origin/main are behind until a fetch.
+    run(work, "switch", "-q", "main");
+    run(dir, "clone", "-q", "origin.git", "other");
+    commit(path.join(dir, "other"), "three");
+    run(path.join(dir, "other"), "push", "-q", "origin", "HEAD:main");
+    assert.match(notAtMain(git), /^HEAD is not origin\/main \(on main at /, "main behind GitHub's, seen after the fetch");
+    run(work, "merge", "-q", "--ff-only", "origin/main");
+    assert.equal(notAtMain(git), null, "main brought level");
+
+    run(work, "remote", "set-url", "origin", path.join(dir, "gone.git"));
+    assert.match(notAtMain(git), /^could not fetch origin's main/, "an origin that cannot be reached is not taken for current");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
